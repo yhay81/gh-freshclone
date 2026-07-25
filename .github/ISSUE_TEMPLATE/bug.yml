@@ -1,0 +1,71 @@
+name: Bug report
+description: Report a reproducible gh-freshclone failure
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include tokens, credential-bearing remotes, private repository
+        content, or unredacted logs from private projects.
+  - type: input
+    id: version
+    attributes:
+      label: gh-freshclone version
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: Host operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: runner
+    attributes:
+      label: Runner and version
+      description: Paste the relevant redacted entry from `gh-freshclone doctor`.
+      placeholder: "Docker 29.x, Podman 5.x, or container 1.x"
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Public reproducer
+      description: Public OWNER/REPO, commit URL, or pull-request URL if available.
+    validations:
+      required: false
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Include exit code and a minimal redacted diagnostic tail.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Redacted doctor output
+      render: json
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, private content, and unrelated personal data.
+          required: true

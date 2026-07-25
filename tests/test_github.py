@@ -1,0 +1,340 @@
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from gh_freshclone import github
+from gh_freshclone.github import (
+    materialize,
+    parse_github_repository,
+    parse_github_target,
+    resolve_repository,
+)
+from gh_freshclone.model import Repository
+from gh_freshclone.process import CommandError, Completed
+
+
+def test_parse_github_repository() -> None:
+    assert parse_github_repository("owner/repo") == "owner/repo"
+    assert (
+        parse_github_repository("https://github.com/owner/repo.git")
+        == "owner/repo"
+    )
+    assert parse_github_repository("git@github.com:owner/repo.git") == "owner/repo"
+    assert (
+        parse_github_repository("https://github.com/owner/repo/pull/42/files")
+        == "owner/repo"
+    )
+    assert parse_github_repository("C:\\work\\repo") is None
+
+
+def test_parse_github_commit_and_pull_request_targets() -> None:
+    sha = "A" * 40
+
+    commit = parse_github_target(f"https://github.com/Owner/Repo/commit/{sha}")
+    pull = parse_github_target("https://github.com/Owner/Repo/pull/0042/files")
+
+    assert commit == github.GitHubTarget("Owner/Repo", sha.lower())
+    assert pull == github.GitHubTarget("Owner/Repo", "refs/pull/42/head")
+    assert parse_github_target("https://user@github.com/owner/repo") is None
+    assert parse_github_target("https://github.com/owner/repo/issues/42") is None
+    assert parse_github_target("https://github.com/owner/repo/pull/0") is None
+    assert (
+        parse_github_target(
+            "https://github.com/owner/repo/pull/" + "1" * 21
+        )
+        is None
+    )
+
+
+def test_resolve_and_materialize_local_commit(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    expected = subprocess.run(
+        ["git", "-C", str(git_repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    repository = resolve_repository(str(git_repository))
+    checkout = tmp_path / "checkout"
+
+    materialize(repository, checkout)
+
+    assert repository.commit_sha == expected
+    assert (checkout / "pyproject.toml").is_file()
+    actual = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert actual == expected
+
+
+def test_materialization_uses_sanitized_git_configuration(
+    monkeypatch,
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    repository = resolve_repository(str(git_repository))
+    original_run = github.run
+    git_environments: list[dict[str, str]] = []
+    commands: list[tuple[str, ...]] = []
+
+    def inspecting_run(command, **kwargs):
+        commands.append(tuple(command))
+        git_environments.append(dict(kwargs["env"]))
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(github, "run", inspecting_run)
+
+    materialize(repository, tmp_path / "checkout")
+
+    assert "--template=" in commands[0]
+    assert git_environments
+    for environment in git_environments:
+        assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert environment["GIT_ATTR_NOSYSTEM"] == "1"
+        assert environment["GIT_TERMINAL_PROMPT"] == "0"
+        assert "GIT_ASKPASS" not in environment
+        assert not Path(environment["GIT_CONFIG_GLOBAL"]).exists()
+
+
+def test_local_resolution_ignores_uncommitted_files(git_repository: Path) -> None:
+    (git_repository / ".env").write_text("SECRET=do-not-copy\n", encoding="utf-8")
+
+    repository = resolve_repository(str(git_repository))
+
+    assert repository.commit_sha
+    assert repository.ref == "HEAD"
+
+
+def test_local_resolution_never_serializes_remote_credentials(
+    git_repository: Path,
+) -> None:
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "remote",
+            "add",
+            "origin",
+            "https://user:do-not-record@github.com/owner/private.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    repository = resolve_repository(str(git_repository))
+    serialized = str(repository.to_dict())
+
+    assert repository.source_url is None
+    assert repository.github_repository is None
+    assert "do-not-record" not in serialized
+
+
+def test_local_resolution_canonicalizes_safe_github_remote(
+    git_repository: Path,
+) -> None:
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:Owner/Repo.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    repository = resolve_repository(str(git_repository))
+
+    assert repository.display_name == "Owner/Repo"
+    assert repository.source_url == "https://github.com/Owner/Repo"
+
+
+def test_invalid_target_error_does_not_echo_possible_secret() -> None:
+    target = "https://user:do-not-echo@github.com/owner/repo"
+
+    with pytest.raises(github.RepositoryError) as raised:
+        resolve_repository(target)
+
+    assert "do-not-echo" not in str(raised.value)
+
+
+def test_default_github_resolution_uses_one_credential_free_git_request(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
+    monkeypatch.setenv(
+        "GIT_CONFIG_PARAMETERS",
+        "'http.extraHeader=Authorization: bearer do-not-forward'",
+    )
+    monkeypatch.setenv("GIT_EXEC_PATH", "/untrusted/git-core")
+    monkeypatch.setenv("Git_AskPass", "/untrusted/askpass")
+
+    def fake_run(command, **kwargs):
+        calls.append((tuple(command), dict(kwargs["env"])))
+        return Completed(
+            tuple(command),
+            0,
+            f"ref: refs/heads/main\tHEAD\n{'a' * 40}\tHEAD\n",
+            "",
+        )
+
+    monkeypatch.setattr(github, "run", fake_run)
+    monkeypatch.setattr(github, "_require", lambda command: None)
+
+    repository = github._resolve_github("owner/repo", None)
+
+    assert len(calls) == 1
+    command, environment = calls[0]
+    assert command[:2] == ("git", "ls-remote")
+    assert "--symref" in command
+    assert command[-2:] == ("https://github.com/owner/repo.git", "HEAD")
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_TERMINAL_PROMPT"] == "0"
+    assert "GIT_ASKPASS" not in environment
+    assert "GIT_CONFIG_PARAMETERS" not in environment
+    assert "GIT_EXEC_PATH" not in environment
+    assert not any(name.upper() == "GIT_ASKPASS" for name in environment)
+    assert not Path(environment["GIT_CONFIG_GLOBAL"]).exists()
+    assert repository.display_name == "owner/repo"
+    assert repository.ref == "main"
+    assert repository.commit_sha == "a" * 40
+    assert repository.is_private is False
+
+
+def test_exact_sha_resolution_skips_remote_request(monkeypatch) -> None:
+    monkeypatch.setattr(
+        github,
+        "run",
+        lambda *args, **kwargs: pytest.fail("exact SHA must not resolve remotely"),
+    )
+    sha = "b" * 40
+
+    repository = github._resolve_github("owner/repo", sha)
+
+    assert repository.commit_sha == sha
+    assert repository.is_private is None
+
+
+def test_branch_and_annotated_tag_resolution_are_deterministic(monkeypatch) -> None:
+    outputs = iter(
+        (
+            Completed(
+                ("git",),
+                0,
+                f"{'a' * 40}\trefs/heads/release\n"
+                f"{'b' * 40}\trefs/tags/release\n"
+                f"{'c' * 40}\trefs/tags/release^{{}}\n",
+                "",
+            ),
+            Completed(
+                ("git",),
+                0,
+                f"{'b' * 40}\trefs/tags/v1\n"
+                f"{'c' * 40}\trefs/tags/v1^{{}}\n",
+                "",
+            ),
+        )
+    )
+    monkeypatch.setattr(github, "run", lambda *args, **kwargs: next(outputs))
+    monkeypatch.setattr(github, "_require", lambda command: None)
+
+    branch = github._resolve_github("owner/repo", "release")
+    tag = github._resolve_github("owner/repo", "v1")
+
+    assert branch.commit_sha == "a" * 40
+    assert tag.commit_sha == "c" * 40
+
+
+def test_pull_request_url_resolves_advertised_head(monkeypatch) -> None:
+    def fake_run(command, **kwargs):
+        assert command[-1] == "refs/pull/42/head"
+        return Completed(tuple(command), 0, f"{'d' * 40}\trefs/pull/42/head\n", "")
+
+    monkeypatch.setattr(github, "run", fake_run)
+    monkeypatch.setattr(github, "_require", lambda command: None)
+
+    repository = resolve_repository("https://github.com/owner/repo/pull/42")
+
+    assert repository.ref == "refs/pull/42/head"
+    assert repository.commit_sha == "d" * 40
+
+
+def test_embedded_ref_rejects_explicit_ref() -> None:
+    with pytest.raises(github.RepositoryError, match="cannot be combined"):
+        resolve_repository(
+            f"https://github.com/owner/repo/commit/{'a' * 40}",
+            "main",
+        )
+
+
+def test_unavailable_remote_is_reported_as_public_resolution_failure(
+    monkeypatch,
+) -> None:
+    def fail(command, **kwargs):
+        raise CommandError(command, 128, "repository not found")
+
+    monkeypatch.setattr(github, "run", fail)
+    monkeypatch.setattr(github, "_require", lambda command: None)
+
+    with pytest.raises(github.RepositoryError, match="could not resolve public"):
+        github._resolve_github("owner/private", None)
+
+
+def test_public_github_materialization_uses_credential_free_https(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repository = Repository(
+        display_name="owner/repo",
+        commit_sha="a" * 40,
+        ref="main",
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=False,
+    )
+    commands: list[tuple[str, ...]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(tuple(command))
+        return Completed(tuple(command), 0, "", "")
+
+    monkeypatch.setattr(github, "run", fake_run)
+    monkeypatch.setattr(github, "_require", lambda command: None)
+
+    materialize(repository, tmp_path / "checkout")
+
+    assert commands[0][0:2] == ("git", "clone")
+    assert "https://github.com/owner/repo.git" in commands[0]
+    assert all(command[0] == "git" for command in commands)
+
+
+def test_private_github_materialization_fails_before_git(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repository = Repository(
+        display_name="owner/private",
+        commit_sha="a" * 40,
+        ref="main",
+        source_url="https://github.com/owner/private",
+        github_repository="owner/private",
+        local_path=None,
+        is_private=True,
+    )
+    monkeypatch.setattr(github, "_require", lambda command: None)
+
+    with pytest.raises(github.RepositoryError, match="private GitHub repositories"):
+        materialize(repository, tmp_path / "checkout")

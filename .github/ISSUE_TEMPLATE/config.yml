@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/yhay81/gh-freshclone/security/policy
+    about: Follow the private reporting instructions; do not open a public exploit report.

@@ -1,0 +1,48 @@
+name: Apple container E2E
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-container-e2e
+  cancel-in-progress: false
+
+jobs:
+  native-apple-container:
+    runs-on: [self-hosted, macOS, ARM64, gh-freshclone-apple-container]
+    timeout-minutes: 30
+    env:
+      GH_FRESHCLONE_E2E_RUNNER: container
+      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: false
+      - name: Verify supported Apple host
+        shell: bash
+        run: |
+          test "$(uname -m)" = "arm64"
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+          container --version
+          container_version="$(
+            container --version |
+              grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' |
+              head -n 1
+          )"
+          test -n "${container_version}"
+          test "${container_version%%.*}" -ge 1
+          container system start
+          container system status
+      - run: uv sync --locked
+      - name: Exercise native Apple container boundary
+        run: uv run pytest -q tests/test_container_e2e.py
+      - name: Remove self-hosted uv cache
+        if: always()
+        run: uv cache clean
