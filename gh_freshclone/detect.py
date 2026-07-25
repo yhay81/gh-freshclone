@@ -17,6 +17,10 @@ DEFAULT_PYTHON_MINOR = 13
 DEFAULT_NODE_MAJOR = 24
 BOOTSTRAP_UV_VERSION = "0.11.32"
 BOOTSTRAP_BUN_VERSION = "1.3.14"
+_PREPARED_PYTEST_COMMAND = (
+    "PATH=/prepared/venv/bin:$PATH "
+    "/prepared/venv/bin/python -m pytest -q"
+)
 
 _DEPENDENCY_FILES = {
     "python": (
@@ -25,6 +29,10 @@ _DEPENDENCY_FILES = {
         "requirements.txt",
         "requirements-dev.txt",
         "requirements-test.txt",
+        "dev-requirements.txt",
+        "test-requirements.txt",
+        "setup.cfg",
+        "setup.py",
         ".python-version",
     ),
     "node": (
@@ -220,6 +228,31 @@ def _contains_dependency(dependencies: object, name: str) -> bool:
     return any(isinstance(item, str) and pattern.match(item.strip()) for item in dependencies)
 
 
+def _read_setup_cfg(path: Path) -> configparser.ConfigParser | None:
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        with path.open(encoding="utf-8") as source:
+            parser.read_file(source)
+    except (OSError, UnicodeDecodeError, configparser.Error):
+        return None
+    return parser
+
+
+def _setup_cfg_pytest_extra(
+    parser: configparser.ConfigParser | None,
+) -> str | None:
+    if parser is None or not parser.has_section("options.extras_require"):
+        return None
+    for name in ("test", "tests", "dev"):
+        value = parser.get("options.extras_require", name, fallback="")
+        if re.search(
+            r"(?im)^\s*pytest(?:$|[-_.\s<>=!~\[])",
+            value,
+        ):
+            return name
+    return None
+
+
 def _python_minor(root: Path, pyproject: dict[str, Any]) -> int:
     version_file = root / ".python-version"
     if version_file.is_file():
@@ -329,9 +362,17 @@ def _quick_tox_environment(
 def _detect_python(root: Path, profile: str) -> tuple[CheckStep | None, list[str]]:
     warnings: list[str] = []
     pyproject_path = root / "pyproject.toml"
+    setup_cfg_path = root / "setup.cfg"
+    setup_py_path = root / "setup.py"
     requirements = [
         path
-        for name in ("requirements.txt", "requirements-dev.txt", "requirements-test.txt")
+        for name in (
+            "requirements.txt",
+            "requirements-dev.txt",
+            "requirements-test.txt",
+            "dev-requirements.txt",
+            "test-requirements.txt",
+        )
         if (path := root / name).is_file()
     ]
     has_pytest_config = any(
@@ -339,10 +380,20 @@ def _detect_python(root: Path, profile: str) -> tuple[CheckStep | None, list[str
     )
     has_tests = (root / "tests").is_dir() or (root / "test").is_dir()
 
-    if not pyproject_path.is_file() and not requirements:
+    if (
+        not pyproject_path.is_file()
+        and not setup_py_path.is_file()
+        and not requirements
+    ):
         return None, warnings
 
     pyproject = _read_toml(pyproject_path) if pyproject_path.is_file() else {}
+    setup_cfg = (
+        _read_setup_cfg(setup_cfg_path) if setup_cfg_path.is_file() else None
+    )
+    if not pyproject and setup_cfg is not None:
+        requirement = setup_cfg.get("options", "python_requires", fallback="")
+        pyproject = {"project": {"requires-python": requirement}}
     minor = _python_minor(root, pyproject)
     evidence: list[str] = []
 
@@ -450,7 +501,7 @@ def _detect_python(root: Path, profile: str) -> tuple[CheckStep | None, list[str
             prepare_command = (
                 f"uv sync{frozen} && uv pip install --python .venv pytest"
             )
-            command = ".venv/bin/python -m pytest -q"
+            command = _PREPARED_PYTEST_COMMAND
             evidence.append("tests/")
             warnings.append(
                 "Python tests were found without a declared pytest dependency; "
@@ -475,6 +526,47 @@ def _detect_python(root: Path, profile: str) -> tuple[CheckStep | None, list[str
         f"python3.{minor}-trixie"
     )
     requirement_args = " ".join(f"-r {path.name}" for path in requirements)
+    if setup_py_path.is_file():
+        selected_extra = _setup_cfg_pytest_extra(setup_cfg)
+        install_target = (
+            shlex.quote(f".[{selected_extra}]") if selected_extra else "."
+        )
+        install_parts = [install_target]
+        if requirement_args:
+            install_parts.append(requirement_args)
+        if selected_extra is None:
+            install_parts.append("pytest")
+        install = (
+            "uv venv /prepared/venv "
+            "&& uv pip install --python /prepared/venv "
+            + " ".join(install_parts)
+        )
+        evidence.append("setup.py")
+        if setup_cfg_path.is_file():
+            evidence.append("setup.cfg")
+        evidence.extend(path.name for path in requirements)
+        if selected_extra:
+            evidence.append(f"options.extras_require.{selected_extra}")
+        else:
+            warnings.append(
+                "Legacy Python tests were found without a declared pytest "
+                "extra; the project and pytest are installed ephemerally."
+            )
+        if has_tests or has_pytest_config:
+            evidence.append("tests/")
+            return (
+                _step(
+                    root,
+                    "python",
+                    image,
+                    _PREPARED_PYTEST_COMMAND,
+                    evidence,
+                    prepare_command=install,
+                ),
+                warnings,
+            )
+        return None, warnings
+
     evidence.extend(path.name for path in requirements)
     install = (
         "uv venv /prepared/venv "
@@ -482,7 +574,7 @@ def _detect_python(root: Path, profile: str) -> tuple[CheckStep | None, list[str
         f"{requirement_args} pytest"
     )
     if has_tests or has_pytest_config:
-        command = "/prepared/venv/bin/python -m pytest -q"
+        command = _PREPARED_PYTEST_COMMAND
         evidence.append("tests/")
         return (
             _step(

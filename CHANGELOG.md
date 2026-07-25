@@ -6,6 +6,18 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.8.0
+
+- Compile conservative Python baselines for committed `setup.py`/`setup.cfg`
+  projects without executing their packaging code during planning. Declared
+  pytest extras and common legacy development/test requirements files are
+  installed only inside the network-enabled preparation container.
+- Put the prepared Python virtual environment first on `PATH` during the
+  offline test phase, so repository tests that spawn `python` or installed
+  console scripts remain in the same isolated dependency environment.
+- Include legacy Python packaging and requirement inputs in dependency
+  identity, and cover the child-process boundary with native runner E2E.
+
 ## 0.7.0
 
 - Add `github-status`, an explicit read-only GitHub REST API integration that
