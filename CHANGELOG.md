@@ -4,6 +4,11 @@ All notable changes to `gh-freshclone` are documented here. The project uses
 semantic versioning while its public receipt, execution-policy, plan, and
 adapter versions evolve independently.
 
+## Unreleased
+
+- Make PyPI publication opt-in through the `PYPI_TRUSTED_PUBLISHING`
+  repository variable while keeping verified GitHub releases independent.
+
 ## 0.3.2
 
 - Allow the checkout-free publish job to address its GitHub repository

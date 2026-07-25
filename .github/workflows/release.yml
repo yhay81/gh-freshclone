@@ -122,6 +122,7 @@ jobs:
               --title "gh-freshclone ${RELEASE_TAG}"
           fi
       - name: Publish to PyPI with Trusted Publishing
+        if: vars.PYPI_TRUSTED_PUBLISHING == 'true'
         run: uv publish --trusted-publishing always dist/*.whl dist/*.tar.gz
       - name: Publish GitHub release
         shell: bash
