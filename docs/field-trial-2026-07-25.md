@@ -220,6 +220,26 @@ only the eight oldest app-owned volumes. Both operations completed with no
 warnings. The reserve is checked only after an immutable PASS miss, so low disk
 does not disable the fastest cached proof.
 
+### Continuous prepared-volume bound — 2026-07-26
+
+A later runtime audit found 13 app-owned prepared volumes using 3,500,699,996
+bytes. The daily maintenance marker was only 14.2 hours old, so the automatic
+path returned before measuring usage even though the 3 GiB hard limit had
+already been crossed. The pre-execution free-space reserve still protected the
+host from exhaustion, but the configured cache budget was temporarily soft.
+
+Version 0.6.1 records whether dependency preparation actually missed its cache.
+After such a miss, it measures only the growth-prone prepared-volume category
+and bypasses the daily interval when the byte or count limit is exceeded.
+Preparation hits retain the zero-probe fast path. A cross-process maintenance
+lock prevents two finishing checks from running the same prune concurrently.
+
+The corrected automatic path was applied to the live cache with no execution
+containers active. It removed the two oldest app-owned Bun volumes and reduced
+usage to 2,766,299,996 bytes across 11 volumes, below the 3 GiB budget. No
+unmanaged volume or host path was selected; the removed dependency state is
+recreated on demand.
+
 ### Failed-preparation cache recovery — 2026-07-26
 
 The original storage incident also left Deno package-manager state partially

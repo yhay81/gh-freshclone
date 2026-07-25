@@ -40,6 +40,7 @@ _HUMAN_SIZE = re.compile(
 )
 _LAST_USED = ".gh-freshclone-last-used"
 _CACHE_STATE_LOCK_KEY = "gh-freshclone-cache-state-v1"
+_AUTOMATIC_PRUNE_LOCK_KEY = "gh-freshclone-automatic-prune-v1"
 
 
 class CacheSpaceError(RuntimeError):
@@ -949,29 +950,55 @@ def prune_cache(
     )
 
 
+def _prepared_volume_limits_exceeded() -> bool:
+    """Check growth-prone prepared volumes without walking host cache trees."""
+
+    volumes = [
+        item
+        for item in _managed_volumes()
+        if item.get("runner") in {"docker", "podman", "container"}
+        and isinstance(item.get("name"), str)
+        and _VOLUME_NAME.fullmatch(item["name"])
+    ]
+    if len(volumes) > DEFAULT_MAX_VOLUMES:
+        return True
+    volume_sizes, size_complete = _prepared_volume_sizes(volumes)
+    return (
+        size_complete
+        and sum(volume_sizes.values()) > DEFAULT_MAX_VOLUME_BYTES
+    )
+
+
 def maybe_prune_cache(
     *,
+    prepared_volumes_changed: bool = False,
     protected_path: Path | None = None,
     protected_evidence: Path | None = None,
     protected_volume: tuple[str, str] | None = None,
     protected_volumes: tuple[tuple[str, str], ...] = (),
 ) -> None:
-    """Run bounded maintenance at most once per day; execution never depends on it."""
+    """Run daily maintenance, or reclaim an observed prepared-volume overflow."""
 
     marker = cache_root() / ".last-automatic-prune"
     try:
-        if (
-            marker.exists()
-            and time.time() - marker.stat().st_mtime < AUTOMATIC_PRUNE_INTERVAL_SECONDS
-        ):
-            return
-        prune_cache(
-            protected_path=protected_path,
-            protected_evidence=protected_evidence,
-            protected_volume=protected_volume,
-            protected_volumes=protected_volumes,
-        )
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch()
+        with cache_lock(_AUTOMATIC_PRUNE_LOCK_KEY):
+            recently_pruned = (
+                marker.exists()
+                and time.time() - marker.stat().st_mtime
+                < AUTOMATIC_PRUNE_INTERVAL_SECONDS
+            )
+            if recently_pruned and (
+                not prepared_volumes_changed
+                or not _prepared_volume_limits_exceeded()
+            ):
+                return
+            prune_cache(
+                protected_path=protected_path,
+                protected_evidence=protected_evidence,
+                protected_volume=protected_volume,
+                protected_volumes=protected_volumes,
+            )
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
     except (OSError, ValueError):
         return

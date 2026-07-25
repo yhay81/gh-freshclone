@@ -137,6 +137,43 @@ def test_check_writes_and_reuses_passing_receipt(
     assert len(materializations) == 1
 
 
+def test_fresh_preparation_triggers_volume_pressure_maintenance(
+    monkeypatch,
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(
+        "gh_freshclone.workflow.select_runner",
+        lambda requested: "docker",
+    )
+    monkeypatch.setattr(
+        "gh_freshclone.workflow.run_step",
+        lambda *args, **kwargs: RunnerExecution(
+            0,
+            0.1,
+            "ok",
+            prepared_volume=(
+                "ghfc-12345678-123456789abc-quick-python-cache-p6-e16"
+            ),
+            prepare_cache_hit=False,
+        ),
+    )
+    maintenance: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "gh_freshclone.cache.maybe_prune_cache",
+        lambda **kwargs: maintenance.append(kwargs),
+    )
+
+    check_repository(
+        str(git_repository),
+        use_cache=False,
+        echo=False,
+    )
+
+    assert maintenance == [{"prepared_volumes_changed": True}]
+
+
 def test_cache_miss_rejects_stopped_runner_before_clone(
     monkeypatch,
     git_repository: Path,

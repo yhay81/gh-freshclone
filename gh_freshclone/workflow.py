@@ -252,6 +252,7 @@ def _check_resolved_repository(
         evidence_locks.enter_context(cache_path_lock(destination))
         results: list[StepResult] = []
         last_execution: RunnerExecution | None = None
+        prepared_volumes_changed = False
         for index, step in enumerate(plan.steps, start=1):
             # Every runner mounts the canonical fresh checkout read-only, then
             # copies it into its own ephemeral container. A second host copy adds
@@ -283,6 +284,10 @@ def _check_resolved_repository(
                 prepared_volume=volume_name,
             )
             last_execution = execution
+            prepared_volumes_changed = prepared_volumes_changed or bool(
+                execution.prepared_volume
+                and execution.prepare_cache_hit is False
+            )
             status, diagnostics = diagnose_failure(
                 execution.returncode,
                 execution.detail,
@@ -338,5 +343,7 @@ def _check_resolved_repository(
         )
         write_receipt(destination, receipt)
         evidence_locks.close()
-        maybe_prune_cache()
+        maybe_prune_cache(
+            prepared_volumes_changed=prepared_volumes_changed,
+        )
         return receipt, destination, False

@@ -6,6 +6,13 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.6.1
+
+- Enforce the prepared-volume byte and count limits immediately after a
+  preparation cache miss, even when the normal daily maintenance interval has
+  not elapsed. Cache hits avoid the volume-usage probe, and concurrent
+  processes share one automatic-maintenance lock.
+
 ## 0.6.0
 
 - Make test-container network access an operator-controlled policy. Every plan
