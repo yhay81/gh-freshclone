@@ -79,8 +79,92 @@ def test_detects_python_tests_without_declared_pytest(tmp_path: Path) -> None:
     plan = detect_plan(_repository(), tmp_path)
 
     assert "uv pip install --python .venv pytest" in plan.steps[0].prepare_command
-    assert plan.steps[0].command == ".venv/bin/python -m pytest -q"
+    assert plan.steps[0].command == (
+        "PATH=/prepared/venv/bin:$PATH "
+        "/prepared/venv/bin/python -m pytest -q"
+    )
     assert "added ephemerally" in plan.warnings[0]
+
+
+def test_detects_legacy_setup_cfg_test_extra_without_executing_setup_py(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "setup.py").write_text(
+        "raise SystemExit('must not run during planning')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "setup.cfg").write_text(
+        """
+[options]
+python_requires = >=3.11,<3.13
+
+[options.extras_require]
+dev =
+    pytest>=8
+    pytest-mock
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests").mkdir()
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    assert len(plan.steps) == 1
+    step = plan.steps[0]
+    assert step.ecosystem == "python"
+    assert step.image.endswith("python3.12-trixie")
+    assert step.prepare_command == (
+        "uv venv /prepared/venv "
+        "&& uv pip install --python /prepared/venv '.[dev]'"
+    )
+    assert step.command == (
+        "PATH=/prepared/venv/bin:$PATH "
+        "/prepared/venv/bin/python -m pytest -q"
+    )
+    assert "setup.py" in step.evidence
+    assert "setup.cfg" in step.evidence
+    assert "options.extras_require.dev" in step.evidence
+    assert plan.warnings == ()
+
+
+def test_legacy_setup_py_installs_project_and_ephemeral_pytest(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "setup.py").write_text("", encoding="utf-8")
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (tmp_path / "dev-requirements.txt").write_text(
+        "pytest<8\npytest-relaxed\n",
+        encoding="utf-8",
+    )
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    step = plan.steps[0]
+    assert step.prepare_command.endswith(
+        "uv pip install --python /prepared/venv "
+        ". -r dev-requirements.txt pytest"
+    )
+    assert "dev-requirements.txt" in step.evidence
+    assert "without a declared pytest extra" in plan.warnings[0]
+
+
+def test_legacy_python_dependency_identity_includes_setup_files(
+    tmp_path: Path,
+) -> None:
+    setup_py = tmp_path / "setup.py"
+    setup_cfg = tmp_path / "setup.cfg"
+    setup_py.write_text("first\n", encoding="utf-8")
+    setup_cfg.write_text("[metadata]\nname = sample\n", encoding="utf-8")
+    image = "ghcr.io/astral-sh/uv:0.11.32-python3.13-trixie"
+
+    first = _dependency_fingerprint(tmp_path, "python", image)
+    setup_py.write_text("second\n", encoding="utf-8")
+    second = _dependency_fingerprint(tmp_path, "python", image)
+    setup_cfg.write_text("[metadata]\nname = changed\n", encoding="utf-8")
+    third = _dependency_fingerprint(tmp_path, "python", image)
+
+    assert first != second
+    assert second != third
 
 
 def test_prefers_declared_tox_frontend(tmp_path: Path) -> None:
@@ -449,10 +533,21 @@ def test_no_supported_manifest_is_explicit(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation is not generally available")
-def test_manifest_symlink_cannot_escape_checkout(tmp_path: Path) -> None:
-    outside = tmp_path.parent / "outside-pyproject.toml"
-    outside.write_text("[project]\nname='outside'\n", encoding="utf-8")
-    (tmp_path / "pyproject.toml").symlink_to(outside)
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("pyproject.toml", "[project]\nname='outside'\n"),
+        ("setup.py", "raise SystemExit('must not execute')\n"),
+    ],
+)
+def test_manifest_symlink_cannot_escape_checkout(
+    tmp_path: Path,
+    filename: str,
+    contents: str,
+) -> None:
+    outside = tmp_path.parent / f"outside-{filename}"
+    outside.write_text(contents, encoding="utf-8")
+    (tmp_path / filename).symlink_to(outside)
 
     with pytest.raises(ValueError, match="repository input escapes"):
         detect_plan(_repository(), tmp_path)

@@ -321,3 +321,53 @@ responses, bounds each response to 5 MiB and 15 seconds, and marks more than
 100 latest check runs as partial rather than claiming complete success. The
 mutable CI context is not part of deterministic plan, receipt, or PASS-cache
 identity.
+
+## Legacy Python baseline follow-up — 2026-07-26
+
+A second public-repository plan trial sampled ten current default-branch
+commits across Python, Node.js, Go, and Rust:
+
+| Repository | Commit | Ecosystem | Plan time | Warnings |
+|---|---:|---|---:|---:|
+| `astral-sh/ruff` | `a5cdc6d5813b` | Rust | 16.67 s | 1 nested-manifest warning |
+| `cli/cli` | `592255318aa6` | Go | 4.18 s | 0 |
+| `fastapi/fastapi` | `255b91292890` | Python | 6.28 s | 0 |
+| `vitejs/vite` | `3ac77d9dd742` | Node.js | 5.03 s | 1 nested-manifest warning |
+| `nektos/act` | `4f411281417e` | Go | 5.66 s | 0 |
+| `sharkdp/bat` | `78951393e29b` | Rust | 3.09 s | 0 |
+| `psf/requests` | `69f84847045b` | Python | 2.12 s | 0 |
+| `eslint/eslint` | `588a26ddce3c` | Node.js | 4.93 s | 1 nested-manifest warning |
+| `pydantic/pydantic` | `a2a6577d4c32` | Python | 3.27 s | 1 nested-manifest warning |
+| `httpie/cli` | `5b604c37c6c6` | Python | 2.08 s | 0 |
+
+The first run detected nine of ten. `httpie/cli` was rejected despite its
+root `setup.py`, declarative `setup.cfg`, pytest configuration, tests, and
+`test` extra. The detector recognized `setup.cfg` as a test signal but had an
+earlier reachability guard requiring `pyproject.toml` or a narrowly named
+requirements file.
+
+Version 0.8.0 accepts a committed `setup.py` as legacy packaging evidence and
+reads only declarative `setup.cfg` metadata during planning. Packaging code is
+not imported or executed on the host. The project and selected pytest extra
+are installed in the network-enabled preparation container, and tests still
+run in a distinct network-disabled container. It also recognizes both
+`requirements-dev.txt`/`requirements-test.txt` and the common reversed names
+`dev-requirements.txt`/`test-requirements.txt`. The repeated matrix compiled
+all ten targets.
+
+The first physical legacy execution used
+`fabric/fabric@ded51893f02c33d2bc7c157624c44a039a952037`. Dependency
+preparation installed the project and its pinned `dev-requirements.txt`; 393
+tests passed, but one test-spawned `python -m fabric` escaped to the image's
+system Python and could not see the prepared dependencies. Putting
+`/prepared/venv/bin` first on `PATH` closed the child-process boundary. The
+same exact commit then passed 394 tests with 7 skips in 10.354 seconds
+end-to-end, including a 1.577-second verified preparation-cache hit and a
+7.098-second offline runner phase.
+
+`httpie/cli` reached execution as well: 769 tests passed, while its unpinned
+legacy test extra resolved to contemporary dependencies that produced 205
+failures and 26 fixture errors. Some failing paths attempted DNS under the
+offline policy and were stopped. This is useful failure evidence rather than
+a false PASS; it also demonstrates why immutable source alone cannot make an
+unlocked historical dependency graph reproducible.

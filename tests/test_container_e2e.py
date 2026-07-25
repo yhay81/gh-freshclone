@@ -152,6 +152,82 @@ def test_guest_architecture():
         _cleanup_test_volumes()
 
 
+def test_legacy_python_child_process_stays_in_prepared_venv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "legacy-python-repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repository)],
+        check=True,
+        capture_output=True,
+    )
+    (repository / "setup.py").write_text(
+        "from setuptools import setup\n"
+        "setup(name='legacy-fixture', version='1.0.0')\n",
+        encoding="utf-8",
+    )
+    (repository / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    tests = repository / "tests"
+    tests.mkdir()
+    (tests / "test_child_python.py").write_text(
+        "import subprocess\n"
+        "\n"
+        "\n"
+        "def test_child_python_uses_prepared_venv():\n"
+        "    completed = subprocess.run(\n"
+        "        ['python', '-c', 'import sys; print(sys.executable)'],\n"
+        "        check=True,\n"
+        "        capture_output=True,\n"
+        "        text=True,\n"
+        "    )\n"
+        "    assert completed.stdout.strip().startswith('/prepared/venv/')\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setenv(
+        "GH_FRESHCLONE_CACHE",
+        str(tmp_path / "legacy-python-e2e-cache"),
+    )
+    try:
+        receipt, _, _ = check_repository(
+            str(repository),
+            runner=E2E_RUNNER,
+            use_cache=False,
+            echo=True,
+        )
+
+        assert isinstance(receipt, Receipt)
+        assert receipt.status == "pass", receipt.to_dict()
+        step = receipt.plan.steps[0]
+        assert step.evidence[:2] == ("setup.py", "tests/")
+        assert step.command.startswith("PATH=/prepared/venv/bin:$PATH ")
+        assert receipt.results[0].prepare_cache_hit is False
+    finally:
+        _cleanup_test_volumes()
+
+
 def test_test_network_requires_operator_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

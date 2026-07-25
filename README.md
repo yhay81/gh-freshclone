@@ -56,7 +56,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.7.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.8.0"
 gh-freshclone doctor
 ```
 
@@ -433,7 +433,9 @@ arbitrary GitHub Actions `run` blocks are not executed.
 
 Current evidence sources include:
 
-- Python: `pyproject.toml`, `uv.lock`, dependency groups/extras, tox and pytest
+- Python: `pyproject.toml`, `uv.lock`, dependency groups/extras, tox and pytest;
+  legacy `setup.py`/`setup.cfg` projects and common requirements-file names
+  are also compiled without executing `setup.py` on the host
 - Node.js: `packageManager`, lockfiles, and known package scripts
 - Rust: `Cargo.toml` and `rust-toolchain.toml`
 - Go: `go.mod`, using its explicit `toolchain` when present and a refreshed
