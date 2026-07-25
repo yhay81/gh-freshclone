@@ -4,6 +4,11 @@ All notable changes to `gh-freshclone` are documented here. The project uses
 semantic versioning while its public receipt, execution-policy, plan, and
 adapter versions evolve independently.
 
+## 0.3.2
+
+- Allow the checkout-free publish job to address its GitHub repository
+  explicitly when creating the release.
+
 ## 0.3.1
 
 - Copy committed repository contents into the isolated workspace without
