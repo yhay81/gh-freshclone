@@ -111,7 +111,7 @@ def outcome_to_tsumugi_flags(outcome: ProbeOutcome) -> dict[str, Any]:
                     "prepare_duration_seconds",
                     0,
                 ),
-                "test_network": result.get("test_network", "enabled"),
+                "test_network": result.get("test_network", "none"),
                 "failed_phase": result.get("failed_phase"),
                 "prepared_volume": result.get("prepared_volume"),
                 "prepare_cache_hit": result.get("prepare_cache_hit"),

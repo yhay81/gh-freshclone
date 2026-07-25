@@ -15,6 +15,24 @@ _PACKAGE_HINTS = {
     "openssl": "openssl",
     "pkg-config": "pkg-config",
 }
+_SHARED_LIBRARY_PACKAGE_HINTS = {
+    "libasound.so.2": "libasound2",
+    "libatk-1.0.so.0": "libatk1.0-0",
+    "libatk-bridge-2.0.so.0": "libatk-bridge2.0-0",
+    "libcairo.so.2": "libcairo2",
+    "libcups.so.2": "libcups2",
+    "libdrm.so.2": "libdrm2",
+    "libgbm.so.1": "libgbm1",
+    "libgobject-2.0.so.0": "libglib2.0-0",
+    "libnss3.so": "libnss3",
+    "libpango-1.0.so.0": "libpango-1.0-0",
+    "libX11.so.6": "libx11-6",
+    "libXcomposite.so.1": "libxcomposite1",
+    "libXdamage.so.1": "libxdamage1",
+    "libXext.so.6": "libxext6",
+    "libXfixes.so.3": "libxfixes3",
+    "libXrandr.so.2": "libxrandr2",
+}
 
 _MISSING_EXECUTABLE_PATTERNS = (
     re.compile(r"(?:No such file or directory|FileNotFoundError):? ['\"](?P<name>[^/'\"]+)['\"]"),
@@ -180,6 +198,7 @@ def diagnose_failure(
             Diagnostic(
                 kind="missing_shared_library",
                 subject=name,
+                suggested_package=_SHARED_LIBRARY_PACKAGE_HINTS.get(name),
                 message=f"Required shared library is missing: {name}",
                 confidence="high",
                 evidence=("runner output explicitly reports the shared library missing",),

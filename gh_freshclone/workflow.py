@@ -3,10 +3,12 @@ from __future__ import annotations
 import platform
 import tempfile
 from contextlib import ExitStack
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .constants import TEST_NETWORK_POLICIES
 from .model import BaselinePlan, Receipt, Repository, ResourceLimits, StepResult
 from .receipts import (
     dependency_cache_path,
@@ -28,6 +30,16 @@ if TYPE_CHECKING:
 
 class WorkflowError(RuntimeError):
     pass
+
+
+_REPOSITORY_NETWORK_OVERRIDDEN_WARNING = (
+    "Repository configuration requested outbound test network; "
+    "operator policy kept every test step offline. Use "
+    "`--test-network enabled` to opt in."
+)
+_OPERATOR_NETWORK_ENABLED_WARNING = (
+    "Operator policy enabled outbound network for every test step."
+)
 
 
 def resolve_repository(target: str, ref: str | None = None) -> Repository:
@@ -53,6 +65,7 @@ def create_plan(
     ref: str | None = None,
     *,
     profile: str = "quick",
+    test_network: str = "none",
 ) -> BaselinePlan:
     from .detect import detect_plan
 
@@ -63,7 +76,41 @@ def create_plan(
     ) as temporary:
         checkout = Path(temporary) / "source"
         materialize(repository, checkout)
-        return detect_plan(repository, checkout, profile)
+        return _apply_test_network_policy(
+            detect_plan(repository, checkout, profile),
+            test_network,
+        )
+
+
+def _apply_test_network_policy(
+    plan: BaselinePlan,
+    test_network: str,
+) -> BaselinePlan:
+    if test_network not in TEST_NETWORK_POLICIES:
+        choices = ", ".join(TEST_NETWORK_POLICIES)
+        raise ValueError(f"test_network must be one of: {choices}")
+    requested = {step.test_network for step in plan.steps}
+    warnings = [
+        warning
+        for warning in plan.warnings
+        if warning
+        not in {
+            _REPOSITORY_NETWORK_OVERRIDDEN_WARNING,
+            _OPERATOR_NETWORK_ENABLED_WARNING,
+        }
+    ]
+    if plan.steps and test_network == "none" and "enabled" in requested:
+        warnings.append(_REPOSITORY_NETWORK_OVERRIDDEN_WARNING)
+    elif plan.steps and test_network == "enabled" and requested != {"enabled"}:
+        warnings.append(_OPERATOR_NETWORK_ENABLED_WARNING)
+    return replace(
+        plan,
+        steps=tuple(
+            replace(step, test_network=test_network)
+            for step in plan.steps
+        ),
+        warnings=tuple(warnings),
+    )
 
 
 def check_repository(
@@ -76,7 +123,11 @@ def check_repository(
     use_cache: bool = True,
     echo: bool = True,
     profile: str = "quick",
+    test_network: str = "none",
 ) -> tuple[Receipt | dict, Path, bool]:
+    if test_network not in TEST_NETWORK_POLICIES:
+        choices = ", ".join(TEST_NETWORK_POLICIES)
+        raise ValueError(f"test_network must be one of: {choices}")
     resource_limits = ResourceLimits(cpus=cpus, memory=memory)
     selected_runner = preferred_runner(runner)
     validate_runner_limits(
@@ -91,6 +142,7 @@ def check_repository(
             profile,
             selected_runner,
             resource_limits,
+            test_network,
         )
     ):
         receipt, path = indexed
@@ -110,6 +162,7 @@ def check_repository(
                 profile,
                 selected_runner,
                 resource_limits,
+                test_network,
             )
         ):
             receipt, path = indexed
@@ -122,7 +175,7 @@ def check_repository(
     lock_key = (
         f"{repository.display_name}\0{repository.commit_sha}\0"
         f"{profile}\0{selected_runner}\0"
-        f"{resource_limits.cpus:g}\0{resource_limits.memory}"
+        f"{resource_limits.cpus:g}\0{resource_limits.memory}\0{test_network}"
     )
     with cache_lock(lock_key):
         if use_cache and (
@@ -131,6 +184,7 @@ def check_repository(
                 profile,
                 selected_runner,
                 resource_limits,
+                test_network,
             )
         ):
             receipt, path = indexed
@@ -142,6 +196,7 @@ def check_repository(
             use_cache=use_cache,
             echo=echo,
             profile=profile,
+            test_network=test_network,
         )
 
 
@@ -153,6 +208,7 @@ def _check_resolved_repository(
     use_cache: bool,
     echo: bool,
     profile: str,
+    test_network: str,
 ) -> tuple[Receipt | dict, Path, bool]:
     from .cache import (
         CacheSpaceError,
@@ -175,7 +231,10 @@ def _check_resolved_repository(
         temporary_root = Path(temporary)
         checkout = temporary_root / "source"
         materialize(repository, checkout)
-        plan = detect_plan(repository, checkout, profile)
+        plan = _apply_test_network_policy(
+            detect_plan(repository, checkout, profile),
+            test_network,
+        )
         if not plan.steps:
             raise WorkflowError("no executable baseline was detected")
 

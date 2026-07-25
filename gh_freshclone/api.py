@@ -48,12 +48,18 @@ def plan_repository(
     ref: str | None = None,
     *,
     profile: str = "quick",
+    test_network: str = "none",
 ) -> BaselinePlan:
     """Compile a GitHub or local Git target into a deterministic baseline plan."""
 
     from .workflow import create_plan
 
-    return create_plan(target, ref, profile=profile)
+    return create_plan(
+        target,
+        ref,
+        profile=profile,
+        test_network=test_network,
+    )
 
 
 def compile_materialized_checkout(
@@ -61,6 +67,7 @@ def compile_materialized_checkout(
     repository: Repository,
     *,
     profile: str = "quick",
+    test_network: str = "none",
 ) -> BaselinePlan:
     """Compile an already materialized exact checkout without executing its code.
 
@@ -71,8 +78,12 @@ def compile_materialized_checkout(
     """
 
     from .detect import detect_plan
+    from .workflow import _apply_test_network_policy
 
-    return detect_plan(repository, checkout.resolve(), profile)
+    return _apply_test_network_policy(
+        detect_plan(repository, checkout.resolve(), profile),
+        test_network,
+    )
 
 
 def probe_repository(
@@ -85,6 +96,7 @@ def probe_repository(
     use_cache: bool = True,
     echo: bool = True,
     profile: str = "quick",
+    test_network: str = "none",
 ) -> ProbeOutcome:
     """Compile and execute a baseline, returning a versioned typed outcome."""
 
@@ -100,6 +112,7 @@ def probe_repository(
         use_cache=use_cache,
         echo=echo,
         profile=profile,
+        test_network=test_network,
     )
     return ProbeOutcome(
         receipt=receipt,

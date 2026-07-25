@@ -2,6 +2,7 @@ from __future__ import annotations
 
 API_VERSION = 1
 PROFILES = ("quick", "reproduce", "full")
+TEST_NETWORK_POLICIES = ("none", "enabled")
 
 DEFAULT_MAX_BYTES = 5 * 1024**3
 DEFAULT_MAX_ENTRIES = 128

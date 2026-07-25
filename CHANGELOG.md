@@ -6,6 +6,21 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.6.0
+
+- Make test-container network access an operator-controlled policy. Every plan
+  and check is offline by default even when repository-owned configuration
+  requests network; `--test-network enabled` is the explicit opt-in for suites
+  that download assets while testing.
+- Record the effective network policy in plan and receipt identity, separate
+  offline and network-enabled PASS indexes and single-flight locks, and safely
+  retain pre-clone reuse of legacy offline PASS evidence without accepting
+  legacy network-enabled evidence.
+- Add Debian package hints for common missing browser shared libraries. A real
+  network-enabled Deno Fresh run now distinguishes its runtime downloads from
+  the next environment gap, `libgobject-2.0.so.0`, and suggests
+  `libglib2.0-0`.
+
 ## 0.5.1
 
 - Bound runner readiness, version, image/volume metadata, prepared-volume

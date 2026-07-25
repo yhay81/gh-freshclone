@@ -134,17 +134,12 @@ def _configured_step(
         )
     test_network = raw.get(
         "test_network",
-        "none" if prepare_command.strip() else "enabled",
+        "none",
     )
     if test_network not in {"none", "enabled"}:
         raise ConfigurationError(
             f"steps[{index}].test_network must be 'none' or 'enabled'"
         )
-    if test_network == "none" and not prepare_command.strip():
-        raise ConfigurationError(
-            f"steps[{index}] needs prepare_command when test_network is 'none'"
-        )
-
     raw_dependencies = raw.get("dependency_files", [])
     if not isinstance(raw_dependencies, list):
         raise ConfigurationError(

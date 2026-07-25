@@ -178,12 +178,19 @@ def _index_path(
     profile: str,
     runner: str,
     resource_limits: ResourceLimits,
+    test_network: str | None,
 ) -> Path:
     name = _repository_namespace(repository)
     context = execution_context_digest(runner, resource_limits)
+    network = (
+        ""
+        if test_network is None
+        else f"-n{_safe_name(test_network)}"
+    )
     filename = (
         f"{repository.commit_sha}-{_safe_name(profile)}-{_safe_name(runner)}"
-        f"-{context[:12]}-p{PLAN_VERSION}-e{EXECUTION_POLICY_VERSION}.json"
+        f"-{context[:12]}{network}-p{PLAN_VERSION}-"
+        f"e{EXECUTION_POLICY_VERSION}.json"
     )
     return cache_root() / "indexes" / name / filename
 
@@ -245,50 +252,84 @@ def read_indexed_pass_receipt(
     profile: str,
     runner: str,
     resource_limits: ResourceLimits,
+    test_network: str = "none",
 ) -> tuple[dict, Path] | None:
     """Read a compatible PASS receipt before cloning the repository."""
 
-    index = _index_path(repository, profile, runner, resource_limits)
-    try:
-        value = json.loads(index.read_text(encoding="utf-8"))
-        relative = value["receipt"]
-        if not isinstance(relative, str):
-            return None
-        root = cache_root().resolve()
-        path = (root / relative).resolve()
-        if not path.is_relative_to(root):
-            return None
-        receipt = read_pass_receipt(
-            path,
-            runner=runner,
-            resource_limits=resource_limits,
-            touch=False,
+    if test_network not in {"none", "enabled"}:
+        return None
+    indexes = [
+        _index_path(
+            repository,
+            profile,
+            runner,
+            resource_limits,
+            test_network,
         )
-    except (OSError, TypeError, KeyError, json.JSONDecodeError):
-        return None
-    if not receipt:
-        return None
-    plan = receipt.get("plan")
-    if not isinstance(plan, dict):
-        return None
-    repo = plan.get("repository")
-    if not isinstance(repo, dict):
-        return None
-    compatible = (
-        receipt.get("receipt_version") == RECEIPT_VERSION
-        and receipt.get("execution_policy_version") == EXECUTION_POLICY_VERSION
-        and receipt.get("runner") == runner
-        and plan.get("plan_version") == PLAN_VERSION
-        and plan.get("profile") == profile
-        and repo.get("commit_sha") == repository.commit_sha
-        and repo.get("display_name") == repository.display_name
-        and receipt.get("resource_limits") == resource_limits.to_dict()
-    )
-    if not compatible:
-        return None
-    _touch_cache_file(path)
-    _touch_cache_file(index)
-    return receipt, path
+    ]
+    if test_network == "none":
+        indexes.append(
+            _index_path(
+                repository,
+                profile,
+                runner,
+                resource_limits,
+                None,
+            )
+        )
+    for index in indexes:
+        try:
+            value = json.loads(index.read_text(encoding="utf-8"))
+            relative = value["receipt"]
+            if not isinstance(relative, str):
+                continue
+            root = cache_root().resolve()
+            path = (root / relative).resolve()
+            if not path.is_relative_to(root):
+                continue
+            receipt = read_pass_receipt(
+                path,
+                runner=runner,
+                resource_limits=resource_limits,
+                touch=False,
+            )
+        except (OSError, TypeError, KeyError, json.JSONDecodeError):
+            continue
+        if not receipt:
+            continue
+        plan = receipt.get("plan")
+        if not isinstance(plan, dict):
+            continue
+        repo = plan.get("repository")
+        steps = plan.get("steps")
+        if not isinstance(repo, dict) or not isinstance(steps, list):
+            continue
+        observed_network = (
+            "enabled"
+            if any(
+                isinstance(step, dict)
+                and step.get("test_network") == "enabled"
+                for step in steps
+            )
+            else "none"
+        )
+        compatible = (
+            receipt.get("receipt_version") == RECEIPT_VERSION
+            and receipt.get("execution_policy_version") == EXECUTION_POLICY_VERSION
+            and receipt.get("runner") == runner
+            and plan.get("plan_version") == PLAN_VERSION
+            and plan.get("profile") == profile
+            and repo.get("commit_sha") == repository.commit_sha
+            and repo.get("display_name") == repository.display_name
+            and receipt.get("resource_limits") == resource_limits.to_dict()
+            and observed_network == test_network
+        )
+        if not compatible:
+            continue
+        _touch_cache_file(path)
+        _touch_cache_file(index)
+        return receipt, path
+    return None
 
 
 def _atomic_json(path: Path, value: dict) -> None:
@@ -309,11 +350,20 @@ def write_receipt(path: Path, receipt: Receipt) -> None:
     resolved_path = path.resolve()
     if not resolved_path.is_relative_to(root):
         return
+    test_network = (
+        "enabled"
+        if any(
+            step.test_network == "enabled"
+            for step in receipt.plan.steps
+        )
+        else "none"
+    )
     index = _index_path(
         receipt.plan.repository,
         receipt.plan.profile,
         receipt.runner,
         receipt.resource_limits,
+        test_network,
     )
     _atomic_json(
         index,
@@ -323,6 +373,7 @@ def write_receipt(path: Path, receipt: Receipt) -> None:
             "profile": receipt.plan.profile,
             "runner": receipt.runner,
             "resource_limits": receipt.resource_limits.to_dict(),
+            "test_network": test_network,
             "plan_version": receipt.plan.plan_version,
             "execution_policy_version": receipt.execution_policy_version,
         },

@@ -18,6 +18,7 @@ from .constants import (
     DEFAULT_MAX_VOLUME_BYTES,
     DEFAULT_MAX_VOLUMES,
     PROFILES,
+    TEST_NETWORK_POLICIES,
 )
 
 if TYPE_CHECKING:
@@ -95,6 +96,15 @@ def _parser() -> argparse.ArgumentParser:
         default="quick",
         help="quick baseline, repository-default reproduction, or full checks",
     )
+    plan.add_argument(
+        "--test-network",
+        choices=TEST_NETWORK_POLICIES,
+        default="none",
+        help=(
+            "test-container network policy; outbound access requires "
+            "the explicit 'enabled' opt-in"
+        ),
+    )
     plan.add_argument("--json", action="store_true", help="print machine-readable JSON")
 
     check = subparsers.add_parser("check", help="run the inferred baseline in a container")
@@ -116,6 +126,15 @@ def _parser() -> argparse.ArgumentParser:
         choices=PROFILES,
         default="quick",
         help="quick baseline (default), reproduce, or full",
+    )
+    check.add_argument(
+        "--test-network",
+        choices=TEST_NETWORK_POLICIES,
+        default="none",
+        help=(
+            "test-container network policy; outbound access requires "
+            "the explicit 'enabled' opt-in"
+        ),
     )
     check.add_argument("--no-cache", action="store_true", help="ignore a passing receipt")
     check.add_argument("--json", action="store_true", help="print machine-readable JSON")
@@ -243,7 +262,7 @@ def _print_receipt(
         )
         print(
             f"    prepare={result.get('prepare_duration_seconds', 0):.1f}s, "
-            f"test-network={result.get('test_network', 'enabled')}"
+            f"test-network={result.get('test_network', 'none')}"
         )
         for diagnostic in result.get("diagnostics", []):
             suggestion = diagnostic.get("suggested_package")
@@ -407,7 +426,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .workflow import WorkflowError
 
         try:
-            plan = create_plan(args.target, args.ref, profile=args.profile)
+            plan = create_plan(
+                args.target,
+                args.ref,
+                profile=args.profile,
+                test_network=args.test_network,
+            )
             if args.json:
                 print(json.dumps(plan.to_dict(), ensure_ascii=True, indent=2))
             else:
@@ -431,6 +455,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 use_cache=not args.no_cache,
                 echo=not args.quiet and not args.json,
                 profile=args.profile,
+                test_network=args.test_network,
             )
             receipt = outcome.receipt
             path = outcome.receipt_path

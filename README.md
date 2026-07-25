@@ -52,10 +52,11 @@ Prerequisites:
 - Git
 - Docker, Podman, or Apple `container` 1.0.0+ on a supported Mac
 
-Until the first public release, install from a checkout:
+Until the package is registered on PyPI, install the signed release tag
+directly from GitHub:
 
 ```shell
-uv tool install .
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.6.0"
 gh-freshclone doctor
 ```
 
@@ -78,9 +79,8 @@ uv sync --locked
 uv run gh-freshclone doctor
 ```
 
-The supported interface is the standalone `gh-freshclone` executable. The
-repository name leaves room for future GitHub CLI extension packaging, but no
-extension-install claim is made until signed release artifacts exist.
+The supported interface is the standalone `gh-freshclone` executable.
+GitHub CLI extension packaging is not currently claimed.
 
 ## Quick start
 
@@ -100,6 +100,7 @@ gh-freshclone check pallets/itsdangerous
 gh-freshclone check https://github.com/owner/repo/commit/FULL_40_CHAR_SHA
 gh-freshclone check https://github.com/owner/repo/pull/123
 gh-freshclone check . --runner docker --cpus 4 --memory 8g
+gh-freshclone check owner/repo --test-network enabled
 gh-freshclone check owner/repo --json
 ```
 
@@ -111,11 +112,17 @@ Profiles make the cost/coverage choice explicit:
 | `reproduce` | Repository-default contributor baseline | Default tox/test command |
 | `full` | Broad pre-submit confidence | All known scripts, features, or environments |
 
-The profile, preparation and test commands, test-network policy, supporting
-manifest evidence, and dependency fingerprint are part of the plan digest. A
+The profile, preparation and test commands, operator-selected test-network
+policy, supporting manifest evidence, and dependency fingerprint are part of
+the plan digest. Test containers stay offline by default even when
+repository-owned configuration requests network. `--test-network enabled` is
+the explicit operator opt-in that enables outbound access for every test step;
+the effective policy is visible in `plan`, receipts, and results. Offline and
+network-enabled PASS indexes are separate and cannot satisfy one another. A
 PASS is reused only for the same commit, plan version, execution policy,
-profile, and runner. The index is checked before a new clone, so a known PASS
-normally returns in well under a second after commit resolution.
+profile, runner, resources, and test-network policy. The index is checked
+before a new clone, so a known PASS normally returns in well under a second
+after commit resolution.
 
 Use `--no-cache` when fresh execution evidence is required.
 When automation already knows a full 40-character commit SHA, pass it with
@@ -377,6 +384,8 @@ Repository tests execute untrusted code. `gh-freshclone` therefore:
 - mounts only repository-scoped dependency caches;
 - runs dependency preparation with network access, exits that container, and
   starts a distinct test container with network disabled by default;
+- never lets repository-owned configuration enable outbound test access by
+  itself; only the caller's `--test-network enabled` opt-in can do so;
 - drops capabilities, restoring only `CHOWN` and `FOWNER` for package
   extraction;
 - enables `no-new-privileges` with Docker and Podman;
@@ -384,11 +393,13 @@ Repository tests execute untrusted code. `gh-freshclone` therefore:
 - mounts `/tmp` as a disposable tmpfs on every runner;
 - removes named test containers on normal completion, error, or interruption.
 
-Only dependency preparation needs outbound network access. A repository can
-explicitly declare `test_network = "enabled"` when its tests genuinely require
-network. An OCI runtime remains a security boundary with a non-zero attack
-surface. Do not add credential or broad host mounts for untrusted
-repositories.
+Only dependency preparation normally needs outbound network access. For a
+suite that intentionally downloads assets during its test phase, inspect the
+plan and pass `--test-network enabled`. A repository may request the same
+policy in `.gh-freshclone.toml`, but that request remains offline until the
+operator explicitly opts in. An OCI runtime remains a security boundary with
+a non-zero attack surface. Do not add credential or broad host mounts for
+untrusted repositories.
 
 ## Detection policy
 
@@ -434,9 +445,10 @@ dependency_files = ["package-lock.json"]
 
 The configuration is authoritative when present. Paths and dependency files
 must remain below the repository, unknown fields fail closed, and `plan` still
-does not execute commands. A network-disabled test requires a preparation
-phase; use `test_network = "enabled"` only for a test that intentionally
-contacts the network. The compiled plan records `working_directory`
+does not execute commands. `test_network = "enabled"` is only a repository
+request: the effective policy remains `none` unless the caller passes
+`--test-network enabled`. This prevents an unfamiliar repository from granting
+itself outbound access. The compiled plan records `working_directory`
 separately, and the runner mounts each prepared environment at that exact
 subdirectory rather than relying on a shell-only `cd`.
 
