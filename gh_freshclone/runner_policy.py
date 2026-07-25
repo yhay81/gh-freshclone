@@ -3,8 +3,9 @@ from __future__ import annotations
 import platform
 import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 
-from .constants import APPLE_CONTAINER_MIN_VERSION
+from .constants import APPLE_CONTAINER_MIN_VERSION, RUNNER_CONTROL_TIMEOUT_SECONDS
 from .model import ResourceLimits
 
 SUPPORTED_RUNNERS = ("docker", "podman", "container")
@@ -17,17 +18,45 @@ class RunnerError(RuntimeError):
 def _run(command: list[str], *, check: bool = False):
     from .process import run
 
-    return run(command, check=check)
+    return run(
+        command,
+        check=check,
+        timeout=RUNNER_CONTROL_TIMEOUT_SECONDS,
+    )
 
 
 def available_runners() -> dict[str, str | None]:
+    installed = {
+        name: shutil.which(name)
+        for name in SUPPORTED_RUNNERS
+    }
+    probes = {
+        name: [name, "--version"]
+        for name, executable in installed.items()
+        if executable
+    }
+    completed = {}
+    if probes:
+        with ThreadPoolExecutor(
+            max_workers=len(probes),
+            thread_name_prefix="ghfc-runner-version",
+        ) as executor:
+            futures = {
+                name: executor.submit(_run, command, check=False)
+                for name, command in probes.items()
+            }
+            completed = {
+                name: future.result()
+                for name, future in futures.items()
+            }
+
     result: dict[str, str | None] = {}
     for name in SUPPORTED_RUNNERS:
-        executable = shutil.which(name)
+        executable = installed[name]
         if not executable:
             result[name] = None
             continue
-        version = _run([name, "--version"], check=False)
+        version = completed[name]
         output = (version.stdout or version.stderr).strip().splitlines()
         result[name] = output[0] if output else executable
     return result
@@ -122,8 +151,20 @@ def select_runner(requested: str) -> str:
     """Select a ready runner after pre-clone PASS lookup has missed."""
 
     candidates = _runner_preferences(requested)
+    with ThreadPoolExecutor(
+        max_workers=len(candidates),
+        thread_name_prefix="ghfc-runner-ready",
+    ) as executor:
+        futures = {
+            candidate: executor.submit(runner_ready, candidate)
+            for candidate in candidates
+        }
+        readiness = {
+            candidate: future.result()
+            for candidate, future in futures.items()
+        }
     for candidate in candidates:
-        if runner_ready(candidate):
+        if readiness[candidate]:
             return candidate
     hint = (
         " run `container system start` or start Docker/Podman"
@@ -131,7 +172,9 @@ def select_runner(requested: str) -> str:
         else " start Docker/Podman"
     )
     raise RunnerError(
-        f"no installed OCI runner is ready;{hint} and run `gh-freshclone doctor`"
+        "no installed OCI runner is ready or responsive; "
+        f"control probes are limited to {RUNNER_CONTROL_TIMEOUT_SECONDS} seconds;"
+        f"{hint} and run `gh-freshclone doctor`"
     )
 
 

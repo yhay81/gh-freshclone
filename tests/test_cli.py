@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from gh_freshclone import cli
@@ -113,6 +114,31 @@ def test_doctor_requires_git_and_a_ready_runner_but_not_github_auth(
         "authentication_required": False,
     }
     assert payload["runners"]["docker"]["ready"] is True
+
+
+def test_doctor_runner_readiness_probes_are_concurrent(
+    monkeypatch,
+    capsys,
+) -> None:
+    barrier = threading.Barrier(2)
+    monkeypatch.setattr(cli, "_which", lambda command: f"/tools/{command}")
+    monkeypatch.setattr(
+        cli,
+        "available_runners",
+        lambda: {"docker": "29.0", "podman": "5.0"},
+    )
+
+    def ready(name: str) -> bool:
+        barrier.wait(timeout=1)
+        return name == "podman"
+
+    monkeypatch.setattr(cli, "runner_ready", ready)
+
+    assert cli.main(["doctor", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["runners"]["docker"]["ready"] is False
+    assert payload["runners"]["podman"]["ready"] is True
 
 
 def test_invalid_resource_limit_is_an_initialization_error(

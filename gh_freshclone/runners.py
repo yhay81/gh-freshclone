@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -19,9 +19,12 @@ from . import runner_policy as _runner_policy
 from .cache import (
     cache_path_lock,
     cache_volume_lock,
+    discard_dependency_cache,
+    discard_prepared_volume,
     record_prepared_volume,
     touch_dependency_cache,
 )
+from .constants import RUNNER_CONTROL_TIMEOUT_SECONDS
 from .diagnostics import diagnose_failure, failure_executable_candidates
 from .model import CheckStep
 from .process import run
@@ -37,7 +40,6 @@ select_runner = _runner_policy.select_runner
 validate_runner_limits = _runner_policy.validate_runner_limits
 
 MAX_LOG_BYTES = 10 * 1024 * 1024
-_RUNNER_CLEANUP_TIMEOUT_SECONDS = 15
 _PREPARE_CACHE_HIT = "gh-freshclone: verified preparation cache hit"
 _PREPARE_MARKER = ".gh-freshclone-prepared-v1"
 _CONTAINER_TMP = str(PurePosixPath("/", "tmp"))
@@ -165,7 +167,15 @@ def resolve_image_identity(runner: str, image: str) -> str:
     _validate_image_reference(image)
     command = [runner, "image", "inspect", image]
     exact_digest = bool(_RESOLVED_IMAGE_REFERENCE.fullmatch(image))
-    inspected = run(command, check=False) if exact_digest else None
+    inspected = (
+        run(
+            command,
+            check=False,
+            timeout=RUNNER_CONTROL_TIMEOUT_SECONDS,
+        )
+        if exact_digest
+        else None
+    )
     if inspected is not None and inspected.returncode == 0:
         return image
 
@@ -173,7 +183,11 @@ def resolve_image_identity(runner: str, image: str) -> str:
     if pulled.returncode != 0:
         detail = (pulled.stderr or pulled.stdout).strip()
         raise RunnerError(f"failed to pull image {image}: {detail}")
-    inspected = run(command, check=False)
+    inspected = run(
+        command,
+        check=False,
+        timeout=RUNNER_CONTROL_TIMEOUT_SECONDS,
+    )
     if inspected.returncode != 0:
         detail = (inspected.stderr or inspected.stdout).strip()
         raise RunnerError(f"failed to inspect pulled image {image}: {detail}")
@@ -281,7 +295,11 @@ def _cached_prepare_command(
 
 
 def _ensure_prepared_volume(runner: str, name: str) -> None:
-    inspected = run([runner, "volume", "inspect", name], check=False)
+    inspected = run(
+        [runner, "volume", "inspect", name],
+        check=False,
+        timeout=RUNNER_CONTROL_TIMEOUT_SECONDS,
+    )
     if inspected.returncode == 0:
         record_prepared_volume(runner, name)
         return
@@ -298,7 +316,11 @@ def _ensure_prepared_volume(runner: str, name: str) -> None:
             )
         )
     command.append(name)
-    created = run(command, check=False)
+    created = run(
+        command,
+        check=False,
+        timeout=RUNNER_CONTROL_TIMEOUT_SECONDS,
+    )
     if created.returncode != 0:
         detail = (created.stderr or created.stdout).strip()
         raise RunnerError(f"failed to create prepared cache volume {name}: {detail}")
@@ -489,18 +511,18 @@ def _stop_execution(
         run(
             [runner, "rm", "--force", container_name],
             check=False,
-            timeout=_RUNNER_CLEANUP_TIMEOUT_SECONDS,
+            timeout=RUNNER_CONTROL_TIMEOUT_SECONDS,
         )
     elif runner == "container":
         run(
             ["container", "stop", container_name],
             check=False,
-            timeout=_RUNNER_CLEANUP_TIMEOUT_SECONDS,
+            timeout=RUNNER_CONTROL_TIMEOUT_SECONDS,
         )
         run(
             ["container", "delete", container_name],
             check=False,
-            timeout=_RUNNER_CLEANUP_TIMEOUT_SECONDS,
+            timeout=RUNNER_CONTROL_TIMEOUT_SECONDS,
         )
 
 
@@ -549,7 +571,11 @@ def _probe_missing_executables(
         ]
     else:
         return ()
-    probed = run(command, check=False)
+    probed = run(
+        command,
+        check=False,
+        timeout=RUNNER_CONTROL_TIMEOUT_SECONDS,
+    )
     if probed.returncode != 0:
         return ()
     reported = set(probed.stdout.splitlines())
@@ -709,11 +735,13 @@ def _run_step_phases(
     image_identity: str,
     cache_key: str,
     prepare_marker_paths: tuple[str, ...],
+    reset_log: bool = True,
 ) -> RunnerExecution:
     execution_id = uuid.uuid4().hex[:12]
     version = runner_version(runner)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text("", encoding="utf-8")
+    if reset_log:
+        log_path.write_text("", encoding="utf-8")
     total_started = time.monotonic()
     prepare_duration = 0.0
     prepare_cache_hit: bool | None = None
@@ -800,6 +828,66 @@ def _run_step_phases(
     )
 
 
+def _discard_failed_preparation(
+    runner: str,
+    *,
+    cache_path: Path | None,
+    volume_names: list[str],
+) -> tuple[bool, str | None]:
+    resources = 0
+    failures: list[str] = []
+    if cache_path is not None:
+        resources += 1
+        try:
+            removed, error = discard_dependency_cache(cache_path)
+        except OSError as exc:
+            removed, error = False, str(exc)
+        if not removed:
+            failures.append(error or f"host cache {cache_path.name}")
+    for name in volume_names:
+        resources += 1
+        try:
+            removed, error = discard_prepared_volume(runner, name)
+        except OSError as exc:
+            removed, error = False, str(exc)
+        if not removed:
+            failures.append(error or f"prepared volume {name}")
+    if resources == 0:
+        return False, None
+    if failures:
+        return (
+            False,
+            (
+                "gh-freshclone: dependency preparation failed; "
+                f"could not discard {len(failures)} of "
+                f"{resources} scoped cache resources"
+            ),
+        )
+    return (
+        True,
+        (
+            "gh-freshclone: dependency preparation failed; "
+            f"discarded {resources} scoped cache resources before one clean retry"
+        ),
+    )
+
+
+def _append_execution_message(
+    execution: RunnerExecution,
+    log_path: Path,
+    message: str,
+) -> RunnerExecution:
+    try:
+        with log_path.open("a", encoding="utf-8", newline="\n") as log:
+            log.write(f"\n=== {message} ===\n")
+    except OSError:
+        pass
+    return replace(
+        execution,
+        detail=f"{execution.detail}\n{message}"[-4000:],
+    )
+
+
 def run_step(
     runner: str,
     step: CheckStep,
@@ -856,7 +944,7 @@ def run_step(
             _ensure_prepared_volume(runner, effective_volume)
         if support_volume:
             _ensure_prepared_volume(runner, support_volume)
-        return _run_step_phases(
+        execution = _run_step_phases(
             runner,
             step,
             workspace,
@@ -871,6 +959,86 @@ def run_step(
             cache_key=cache_key,
             prepare_marker_paths=prepare_marker_paths,
         )
+        if execution.returncode != 0 and execution.failed_phase == "prepare":
+            discarded, message = _discard_failed_preparation(
+                runner,
+                cache_path=effective_cache,
+                volume_names=volume_resources,
+            )
+            if message:
+                execution = _append_execution_message(
+                    execution,
+                    log_path,
+                    message,
+                )
+            if discarded:
+                try:
+                    if effective_cache:
+                        touch_dependency_cache(effective_cache)
+                    if effective_volume:
+                        _ensure_prepared_volume(runner, effective_volume)
+                    if support_volume:
+                        _ensure_prepared_volume(runner, support_volume)
+                except (OSError, RunnerError) as exc:
+                    return _append_execution_message(
+                        execution,
+                        log_path,
+                        "gh-freshclone: could not recreate the clean scoped "
+                        f"dependency cache: {exc}",
+                    )
+                first_execution = execution
+                execution = _run_step_phases(
+                    runner,
+                    step,
+                    workspace,
+                    log_path,
+                    cpus=cpus,
+                    memory=memory,
+                    echo=echo,
+                    effective_cache=effective_cache,
+                    effective_volume=effective_volume,
+                    support_volume=support_volume,
+                    image_identity=image_identity,
+                    cache_key=cache_key,
+                    prepare_marker_paths=prepare_marker_paths,
+                    reset_log=False,
+                )
+                execution = replace(
+                    execution,
+                    duration_seconds=(
+                        first_execution.duration_seconds
+                        + execution.duration_seconds
+                    ),
+                    prepare_duration_seconds=(
+                        first_execution.prepare_duration_seconds
+                        + execution.prepare_duration_seconds
+                    ),
+                )
+                execution = _append_execution_message(
+                    execution,
+                    log_path,
+                    "gh-freshclone: retried preparation once from a clean "
+                    "scoped cache",
+                )
+                if (
+                    execution.returncode != 0
+                    and execution.failed_phase == "prepare"
+                ):
+                    _, final_message = _discard_failed_preparation(
+                        runner,
+                        cache_path=effective_cache,
+                        volume_names=volume_resources,
+                    )
+                    if final_message:
+                        execution = _append_execution_message(
+                            execution,
+                            log_path,
+                            final_message.replace(
+                                "before one clean retry",
+                                "after the clean retry",
+                            ),
+                        )
+        return execution
 
 
 def classify_exit(returncode: int, detail: str) -> str:

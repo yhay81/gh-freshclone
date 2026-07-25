@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -121,12 +122,12 @@ def test_apple_container_version_support_is_explicit() -> None:
 
 
 def test_mutable_image_is_pulled_before_digest_resolution(monkeypatch) -> None:
-    calls: list[tuple[str, ...]] = []
+    calls: list[tuple[tuple[str, ...], float | None]] = []
     digest = "docker.io/library/python@sha256:" + "a" * 64
 
     def fake_run(command, **kwargs):
         args = tuple(command)
-        calls.append(args)
+        calls.append((args, kwargs.get("timeout")))
         if args[1:3] == ("image", "pull"):
             return Completed(args, 0, "pulled", "")
         return Completed(args, 0, f'[{{"RepoDigests":["{digest}"]}}]', "")
@@ -134,9 +135,9 @@ def test_mutable_image_is_pulled_before_digest_resolution(monkeypatch) -> None:
     monkeypatch.setattr(runners, "run", fake_run)
 
     assert runners.resolve_image_identity("docker", "python:3.13") == digest
-    assert [call[1:3] for call in calls] == [
-        ("image", "pull"),
-        ("image", "inspect"),
+    assert [(call[0][1:3], call[1]) for call in calls] == [
+        (("image", "pull"), None),
+        (("image", "inspect"), 15),
     ]
 
 
@@ -144,17 +145,19 @@ def test_exact_image_digest_uses_present_local_content_without_pull(
     monkeypatch,
 ) -> None:
     image = "docker.io/library/python@sha256:" + "a" * 64
-    calls: list[tuple[str, ...]] = []
+    calls: list[tuple[tuple[str, ...], float | None]] = []
 
     def fake_run(command, **kwargs):
         args = tuple(command)
-        calls.append(args)
+        calls.append((args, kwargs.get("timeout")))
         return Completed(args, 0, "[]", "")
 
     monkeypatch.setattr(runners, "run", fake_run)
 
     assert runners.resolve_image_identity("docker", image) == image
-    assert [call[1:3] for call in calls] == [("image", "inspect")]
+    assert [(call[0][1:3], call[1]) for call in calls] == [
+        (("image", "inspect"), 15),
+    ]
 
 
 def test_mutable_image_never_falls_back_to_stale_local_tag(monkeypatch) -> None:
@@ -252,6 +255,46 @@ def test_auto_skips_stopped_docker_for_ready_podman(monkeypatch) -> None:
     )
 
     assert select_runner("auto") == "podman"
+
+
+def test_auto_runner_readiness_probes_are_concurrent(monkeypatch) -> None:
+    barrier = threading.Barrier(2)
+    monkeypatch.setattr(runner_policy.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        runner_policy.shutil,
+        "which",
+        lambda name: name if name in {"docker", "podman"} else None,
+    )
+
+    def ready(name: str) -> bool:
+        barrier.wait(timeout=1)
+        return name == "podman"
+
+    monkeypatch.setattr(runner_policy, "runner_ready", ready)
+
+    assert select_runner("auto") == "podman"
+
+
+def test_installed_runner_version_probes_are_concurrent(monkeypatch) -> None:
+    barrier = threading.Barrier(2)
+    monkeypatch.setattr(
+        runner_policy.shutil,
+        "which",
+        lambda name: name if name in {"docker", "podman"} else None,
+    )
+
+    def probe(command, **kwargs):
+        barrier.wait(timeout=1)
+        args = tuple(command)
+        return Completed(args, 0, f"{args[0]} 1.0.0", "")
+
+    monkeypatch.setattr(runner_policy, "_run", probe)
+
+    assert runner_policy.available_runners() == {
+        "docker": "docker 1.0.0",
+        "podman": "podman 1.0.0",
+        "container": None,
+    }
 
 
 def test_cache_preference_does_not_probe_daemons(monkeypatch) -> None:
@@ -546,6 +589,235 @@ def test_run_step_records_verified_prepare_cache_hit(
     assert "touch /cache/.gh-freshclone-prepared-v1" in invocations[0][-1]
 
 
+def test_failed_preparation_retries_once_from_a_clean_prepared_volume(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    step = CheckStep(
+        "deno",
+        "denoland/deno:debian",
+        "deno task --frozen test",
+        ("deno.json",),
+        prepare_command="deno install --frozen",
+        test_network="none",
+    )
+    discarded: list[tuple[str, str]] = []
+    phases = iter(
+        (
+            runners._PhaseExecution(
+                1,
+                0.1,
+                "dependency cache is corrupt",
+                frozenset(),
+            ),
+            runners._PhaseExecution(0, 0.1, "", frozenset()),
+            runners._PhaseExecution(0, 0.1, "", frozenset()),
+        )
+    )
+    monkeypatch.setattr(
+        runners,
+        "resolve_image_identity",
+        lambda runner, image: "denoland/deno@sha256:" + "a" * 64,
+    )
+    monkeypatch.setattr(runners, "runner_version", lambda runner: "test")
+    monkeypatch.setattr(runners, "_ensure_prepared_volume", lambda *args: None)
+    monkeypatch.setattr(
+        runners,
+        "_execute_phase",
+        lambda **kwargs: next(phases),
+    )
+    monkeypatch.setattr(
+        runners,
+        "discard_prepared_volume",
+        lambda runner, name: (
+            discarded.append((runner, name)) or True,
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        runners,
+        "discard_dependency_cache",
+        lambda path: pytest.fail("Deno must use only its prepared volume"),
+    )
+
+    result = run_step(
+        "docker",
+        step,
+        tmp_path,
+        tmp_path / "prepare-failed.log",
+        cpus=2,
+        memory="4g",
+        echo=False,
+        prepared_volume="ghfc-12345678-123456789abc-quick-deno-p6-e16",
+    )
+
+    assert result.returncode == 0
+    assert result.failed_phase is None
+    assert len(discarded) == 1
+    assert discarded[0][0] == "docker"
+    assert discarded[0][1].startswith(
+        "ghfc-12345678-123456789abc-quick-deno-p6-e16-i"
+    )
+    assert "retried preparation once from a clean scoped cache" in result.detail
+    assert "discarded 1 scoped cache resources" in (
+        tmp_path / "prepare-failed.log"
+    ).read_text(encoding="utf-8")
+
+
+def test_repeated_prepare_failure_retries_only_once_and_leaves_clean_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    step = CheckStep(
+        "deno",
+        "denoland/deno:debian",
+        "deno task --frozen test",
+        ("deno.json",),
+        prepare_command="deno install --frozen",
+        test_network="none",
+    )
+    phase_calls = 0
+    discarded: list[str] = []
+
+    def fail_prepare(**kwargs):
+        nonlocal phase_calls
+        phase_calls += 1
+        return runners._PhaseExecution(1, 0.1, "still corrupt", frozenset())
+
+    monkeypatch.setattr(
+        runners,
+        "resolve_image_identity",
+        lambda runner, image: "denoland/deno@sha256:" + "a" * 64,
+    )
+    monkeypatch.setattr(runners, "runner_version", lambda runner: "test")
+    monkeypatch.setattr(runners, "_ensure_prepared_volume", lambda *args: None)
+    monkeypatch.setattr(runners, "_execute_phase", fail_prepare)
+    monkeypatch.setattr(
+        runners,
+        "discard_prepared_volume",
+        lambda runner, name: (discarded.append(name) or True, None),
+    )
+
+    result = run_step(
+        "docker",
+        step,
+        tmp_path,
+        tmp_path / "prepare-failed-twice.log",
+        cpus=2,
+        memory="4g",
+        echo=False,
+        prepared_volume="ghfc-12345678-123456789abc-quick-deno-p6-e16",
+    )
+
+    assert result.failed_phase == "prepare"
+    assert phase_calls == 2
+    assert len(discarded) == 2
+    assert "after the clean retry" in result.detail
+
+
+def test_failed_preparation_retries_from_a_clean_host_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    step = CheckStep(
+        "go",
+        "golang:1.24-bookworm",
+        "GOPROXY=off go test ./...",
+        ("go.mod",),
+        prepare_command="go mod download",
+        test_network="none",
+    )
+    phases = iter(
+        (
+            runners._PhaseExecution(1, 0.1, "corrupt module cache", frozenset()),
+            runners._PhaseExecution(0, 0.1, "", frozenset()),
+            runners._PhaseExecution(0, 0.1, "", frozenset()),
+        )
+    )
+    discarded: list[Path] = []
+    monkeypatch.setattr(
+        runners,
+        "resolve_image_identity",
+        lambda runner, image: "golang@sha256:" + "a" * 64,
+    )
+    monkeypatch.setattr(runners, "runner_version", lambda runner: "test")
+    monkeypatch.setattr(runners, "_execute_phase", lambda **kwargs: next(phases))
+    monkeypatch.setattr(
+        runners,
+        "discard_dependency_cache",
+        lambda path: (discarded.append(path) or True, None),
+    )
+    monkeypatch.setattr(
+        runners,
+        "discard_prepared_volume",
+        lambda *args: pytest.fail("Go must use only its host cache"),
+    )
+
+    result = run_step(
+        "docker",
+        step,
+        tmp_path,
+        tmp_path / "host-prepare-failed.log",
+        cpus=2,
+        memory="4g",
+        echo=False,
+        cache_dir=tmp_path / "runner-cache" / "placeholder",
+    )
+
+    assert result.returncode == 0
+    assert len(discarded) == 1
+    assert discarded[0].parent == tmp_path / "runner-cache"
+    assert discarded[0].is_dir()
+    assert "retried preparation once from a clean scoped cache" in result.detail
+
+
+def test_test_failure_preserves_successfully_prepared_dependencies(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    step = CheckStep(
+        "deno",
+        "denoland/deno:debian",
+        "deno task --frozen test",
+        ("deno.json",),
+        prepare_command="deno install --frozen",
+        test_network="none",
+    )
+    phases = iter(
+        (
+            runners._PhaseExecution(0, 0.1, "", frozenset()),
+            runners._PhaseExecution(1, 0.1, "assertion failed", frozenset()),
+        )
+    )
+    monkeypatch.setattr(
+        runners,
+        "resolve_image_identity",
+        lambda runner, image: "denoland/deno@sha256:" + "a" * 64,
+    )
+    monkeypatch.setattr(runners, "runner_version", lambda runner: "test")
+    monkeypatch.setattr(runners, "_ensure_prepared_volume", lambda *args: None)
+    monkeypatch.setattr(runners, "_execute_phase", lambda **kwargs: next(phases))
+    monkeypatch.setattr(
+        runners,
+        "discard_prepared_volume",
+        lambda *args: pytest.fail("test failure must retain prepared dependencies"),
+    )
+
+    result = run_step(
+        "docker",
+        step,
+        tmp_path,
+        tmp_path / "test-failed.log",
+        cpus=2,
+        memory="4g",
+        echo=False,
+        prepared_volume="ghfc-12345678-123456789abc-quick-deno-p6-e16",
+    )
+
+    assert result.failed_phase == "test"
+    assert "discarded" not in result.detail
+
+
 def test_phase_log_is_bounded_while_process_output_is_drained(
     monkeypatch,
     tmp_path: Path,
@@ -727,3 +999,64 @@ def test_runner_readiness_checks_daemon_not_only_executable(monkeypatch) -> None
         ("docker", "info"),
         ("container", "system", "status"),
     ]
+
+
+def test_runner_control_probe_has_a_bounded_deadline(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        observed["command"] = tuple(command)
+        observed.update(kwargs)
+        return Completed(tuple(command), 0, "", "")
+
+    monkeypatch.setattr("gh_freshclone.process.run", fake_run)
+
+    runner_policy._run(["docker", "info"], check=False)
+
+    assert observed == {
+        "command": ("docker", "info"),
+        "check": False,
+        "timeout": 15,
+    }
+
+
+def test_prepared_volume_control_calls_have_bounded_deadlines(monkeypatch) -> None:
+    observed: list[tuple[tuple[str, ...], float | None]] = []
+
+    def fake_run(command, **kwargs):
+        args = tuple(command)
+        observed.append((args, kwargs.get("timeout")))
+        if args[1:3] == ("volume", "inspect"):
+            return Completed(args, 1, "", "no such volume")
+        return Completed(args, 0, "created", "")
+
+    monkeypatch.setattr(runners, "run", fake_run)
+    monkeypatch.setattr(runners, "record_prepared_volume", lambda *args: None)
+
+    runners._ensure_prepared_volume(
+        "docker",
+        "ghfc-12345678-123456789abc-quick-python-p6-e16",
+    )
+
+    assert [timeout for _, timeout in observed] == [15, 15]
+
+
+def test_failure_diagnostic_probe_has_a_bounded_deadline(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        observed["command"] = tuple(command)
+        observed.update(kwargs)
+        return Completed(tuple(command), 0, "less\n", "")
+
+    monkeypatch.setattr(runners, "run", fake_run)
+
+    missing = runners._probe_missing_executables(
+        "docker",
+        "python@sha256:" + "a" * 64,
+        {"less"},
+    )
+
+    assert missing == ("less",)
+    assert observed["check"] is False
+    assert observed["timeout"] == 15

@@ -192,6 +192,40 @@ only the eight oldest app-owned volumes. Both operations completed with no
 warnings. The reserve is checked only after an immutable PASS miss, so low disk
 does not disable the fastest cached proof.
 
+### Failed-preparation cache recovery — 2026-07-26
+
+The original storage incident also left Deno package-manager state partially
+written in its exact-commit prepared volume. Two later forced checks reproduced
+the same prepare-phase JSON parse error even though Docker and host storage had
+recovered. The success marker correctly prevented a false cache hit, but the
+next prepare still consumed the poisoned partial cache.
+
+Version 0.5.1 discards only the failing
+repo/commit/lockfile/image-scoped dependency cache after a non-zero preparation
+phase and retries preparation once in the same check. A repeated preparation
+failure returns without another retry and leaves the scoped cache clean. The
+existing poisoned `denoland/fresh@86d6cdeb331a` volume provided a physical
+recovery test while this behavior was developed:
+
+| Attempt | Observation |
+|---|---|
+| poisoned retry | same parse error; app removed the one scoped volume and its ledger record |
+| clean retry | preparation completed; test reached the expected `environment_gap` for network access under the offline policy |
+| repeated test | `prepare_cache_hit=true`; the valid volume remained available after the test-phase failure |
+
+The final implementation folds the first two observations into one check.
+This distinguishes disposable partial installation state from successfully
+prepared dependencies and prevents an infrastructure incident from becoming a
+persistent false repository failure or an unbounded retry loop.
+
+A final physical fault injection replaced the managed volume's `DENO_DIR`
+directory with a regular file after verifying its gh-freshclone ownership
+labels. One v0.5.1 check then produced two preparation headers, one discard
+marker, one clean-retry marker, and the correct test-phase `environment_gap`.
+The combined runner duration was 68.333 seconds with 21.270 seconds attributed
+to both preparation attempts. The recreated prepared volume existed exactly
+once in both Docker and the app ledger after completion.
+
 ## Exact-target materialization follow-up
 
 The first KAGARI integration run exposed that an exact SHA still entered
