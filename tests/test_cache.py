@@ -24,6 +24,7 @@ from gh_freshclone.cache import (
     cache_status,
     cache_volume_lock,
     ensure_storage_reserve,
+    maybe_prune_cache,
     prune_cache,
     touch_dependency_cache,
 )
@@ -130,6 +131,175 @@ def test_cache_status_counts_receipt_log_evidence(
 
     assert report.evidence_entries == 1
     assert report.evidence_bytes >= 7
+
+
+def test_recent_automatic_prune_skips_unchanged_prepared_volumes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    marker = tmp_path / ".last-automatic-prune"
+    marker.touch()
+    monkeypatch.setattr("gh_freshclone.cache.time.time", lambda: 1_900_000_100)
+    os.utime(marker, (1_900_000_000, 1_900_000_000))
+    monkeypatch.setattr(
+        "gh_freshclone.cache._prepared_volume_limits_exceeded",
+        lambda: pytest.fail("unchanged volumes should not be measured"),
+    )
+    monkeypatch.setattr(
+        "gh_freshclone.cache.prune_cache",
+        lambda **kwargs: pytest.fail("recent maintenance should be reused"),
+    )
+
+    maybe_prune_cache()
+
+
+def test_recent_automatic_prune_reclaims_prepared_volume_overflow(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    marker = tmp_path / ".last-automatic-prune"
+    marker.touch()
+    monkeypatch.setattr("gh_freshclone.cache.time.time", lambda: 1_900_000_100)
+    os.utime(marker, (1_900_000_000, 1_900_000_000))
+    names = [
+        "ghfc-12345678-123456789abc-quick-python-old-p6-e16",
+        "ghfc-12345678-123456789abc-quick-python-new-p6-e16",
+    ]
+    monkeypatch.setattr(
+        "gh_freshclone.cache._managed_volumes",
+        lambda: [
+            {
+                "runner": "docker",
+                "name": name,
+                "created_at": 1_900_000_000,
+                "last_used_at": 1_900_000_000,
+            }
+            for name in names
+        ],
+    )
+    monkeypatch.setattr(
+        "gh_freshclone.cache._runner_volume_sizes",
+        lambda runner: dict.fromkeys(names, 100),
+    )
+    monkeypatch.setattr("gh_freshclone.cache.DEFAULT_MAX_VOLUME_BYTES", 150)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "gh_freshclone.cache.prune_cache",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    maybe_prune_cache(prepared_volumes_changed=True)
+
+    assert calls == [
+        {
+            "protected_path": None,
+            "protected_evidence": None,
+            "protected_volume": None,
+            "protected_volumes": (),
+        }
+    ]
+    assert marker.stat().st_mtime != 1_900_000_000
+
+
+def test_recent_automatic_prune_keeps_changed_volumes_below_limits(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    marker = tmp_path / ".last-automatic-prune"
+    marker.touch()
+    monkeypatch.setattr("gh_freshclone.cache.time.time", lambda: 1_900_000_100)
+    os.utime(marker, (1_900_000_000, 1_900_000_000))
+    name = "ghfc-12345678-123456789abc-quick-python-cache-p6-e16"
+    monkeypatch.setattr(
+        "gh_freshclone.cache._managed_volumes",
+        lambda: [
+            {
+                "runner": "docker",
+                "name": name,
+                "created_at": 1_900_000_000,
+                "last_used_at": 1_900_000_000,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "gh_freshclone.cache._runner_volume_sizes",
+        lambda runner: {name: 100},
+    )
+    monkeypatch.setattr("gh_freshclone.cache.DEFAULT_MAX_VOLUME_BYTES", 150)
+    monkeypatch.setattr(
+        "gh_freshclone.cache.prune_cache",
+        lambda **kwargs: pytest.fail("cache remains within its hard limits"),
+    )
+
+    maybe_prune_cache(prepared_volumes_changed=True)
+
+
+def test_recent_automatic_prune_enforces_count_without_byte_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    marker = tmp_path / ".last-automatic-prune"
+    marker.touch()
+    monkeypatch.setattr("gh_freshclone.cache.time.time", lambda: 1_900_000_100)
+    os.utime(marker, (1_900_000_000, 1_900_000_000))
+    names = [
+        "ghfc-12345678-123456789abc-quick-python-old-p6-e16",
+        "ghfc-12345678-123456789abc-quick-python-new-p6-e16",
+    ]
+    monkeypatch.setattr(
+        "gh_freshclone.cache._managed_volumes",
+        lambda: [
+            {
+                "runner": "container",
+                "name": name,
+                "created_at": 1_900_000_000,
+                "last_used_at": 1_900_000_000,
+            }
+            for name in names
+        ],
+    )
+    monkeypatch.setattr("gh_freshclone.cache.DEFAULT_MAX_VOLUMES", 1)
+    monkeypatch.setattr(
+        "gh_freshclone.cache._runner_volume_sizes",
+        lambda runner: pytest.fail("count overflow needs no byte metadata"),
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "gh_freshclone.cache.prune_cache",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    maybe_prune_cache(prepared_volumes_changed=True)
+
+    assert len(calls) == 1
+
+
+def test_expired_automatic_prune_runs_without_volume_growth_probe(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    marker = tmp_path / ".last-automatic-prune"
+    marker.touch()
+    monkeypatch.setattr("gh_freshclone.cache.time.time", lambda: 1_900_100_000)
+    os.utime(marker, (1_900_000_000, 1_900_000_000))
+    monkeypatch.setattr(
+        "gh_freshclone.cache._prepared_volume_limits_exceeded",
+        lambda: pytest.fail("daily maintenance does not need a pre-scan"),
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "gh_freshclone.cache.prune_cache",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    maybe_prune_cache()
+
+    assert len(calls) == 1
 
 
 def test_runner_volume_size_units_are_normalized_to_bytes() -> None:

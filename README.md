@@ -56,7 +56,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.6.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.6.1"
 gh-freshclone doctor
 ```
 
@@ -291,19 +291,21 @@ gh-freshclone cache prune --max-gib 3 --max-volume-gib 2 \
 gh-freshclone cache prune --max-evidence-gib 0.5 --max-evidence-entries 256
 ```
 
-Automatic maintenance runs at most once per day. Defaults are 5 GiB and 128
-dependency-cache entries, 1 GiB and 512 receipt/log evidence bundles, 24
-prepared volumes with a 3 GiB measured-volume budget, and 30 days. A cache hit
-refreshes its receipt's LRU time. Docker and Podman volume usage comes from
-runner metadata without mounting or executing cached content; Apple
-`container` retains the count and age limits when byte accounting is
-unavailable. Runner readiness, version, image/volume metadata, volume creation,
-failure diagnostics, cache metadata, and cleanup calls are limited to 15
-seconds, so a stopped runner cannot turn startup, `doctor`, `cache status`, or
-failure handling into an unbounded wait. Independent version/readiness probes
-run concurrently while preserving runner preference order, so the worst-case
-wait does not multiply by the number of installed runners. Image downloads and
-repository prepare/test phases keep their normal completion semantics.
+Automatic maintenance runs daily, and also after a preparation cache miss when
+measured prepared-volume usage has crossed its hard limit. Cache hits do not
+pay for this extra measurement. Defaults are 5 GiB and 128 dependency-cache
+entries, 1 GiB and 512 receipt/log evidence bundles, 24 prepared volumes with a
+3 GiB measured-volume budget, and 30 days. A cache hit refreshes its receipt's
+LRU time. Docker and Podman volume usage comes from runner metadata without
+mounting or executing cached content; Apple `container` retains the count and
+age limits when byte accounting is unavailable. Runner readiness, version,
+image/volume metadata, volume creation, failure diagnostics, cache metadata,
+and cleanup calls are limited to 15 seconds, so a stopped runner cannot turn
+startup, `doctor`, `cache status`, or failure handling into an unbounded wait.
+Independent version/readiness probes run concurrently while preserving runner
+preference order, so the worst-case wait does not multiply by the number of
+installed runners. Image downloads and repository prepare/test phases keep
+their normal completion semantics.
 Non-zero runs explicitly retry named container cleanup, and Docker/Podman
 execution containers carry app ownership labels for diagnosis.
 
