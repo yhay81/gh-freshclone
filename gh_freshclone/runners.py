@@ -334,7 +334,7 @@ def build_runner_command(
         )
     shell_command = (
         'mkdir -p "$HOME" /workspace /cache '
-        "&& cp -a /input/. /workspace/ "
+        "&& cp -R /input/. /workspace/ "
         + prepared_setup
         + f"&& cd {quoted_working_directory} && "
         + (step.command if command_text is None else command_text)

@@ -57,10 +57,11 @@ def test_docker_command_is_limited_and_passes_no_host_environment(
     assert "GOMODCACHE=/cache/go-mod" in rendered
     assert command[-3] == "golang@sha256:" + "a" * 64
     expected_shell = (
-        'mkdir -p "$HOME" /workspace /cache && cp -a /input/. /workspace/ '
+        'mkdir -p "$HOME" /workspace /cache && cp -R /input/. /workspace/ '
         "&& cd /workspace && go test ./..."
     )
     assert command[-2:] == ["-c", expected_shell]
+    assert "cp -a" not in rendered
 
 
 def test_apple_container_command_uses_volume_and_resource_limits(
