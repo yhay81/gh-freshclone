@@ -37,6 +37,7 @@ select_runner = _runner_policy.select_runner
 validate_runner_limits = _runner_policy.validate_runner_limits
 
 MAX_LOG_BYTES = 10 * 1024 * 1024
+_RUNNER_CLEANUP_TIMEOUT_SECONDS = 15
 _PREPARE_CACHE_HIT = "gh-freshclone: verified preparation cache hit"
 _PREPARE_MARKER = ".gh-freshclone-prepared-v1"
 _CONTAINER_TMP = str(PurePosixPath("/", "tmp"))
@@ -370,6 +371,9 @@ def build_runner_command(
             runner,
             "run",
             "--rm",
+            "--label=gh-freshclone.managed=true",
+            f"--label=gh-freshclone.cache-id={cache_namespace()}",
+            "--label=gh-freshclone.kind=execution",
             "--cap-drop=ALL",
             "--cap-add=CHOWN",
             "--cap-add=FOWNER",
@@ -482,10 +486,22 @@ def _stop_execution(
             proc.wait()
 
     if runner in {"docker", "podman"}:
-        run([runner, "rm", "--force", container_name], check=False)
+        run(
+            [runner, "rm", "--force", container_name],
+            check=False,
+            timeout=_RUNNER_CLEANUP_TIMEOUT_SECONDS,
+        )
     elif runner == "container":
-        run(["container", "stop", container_name], check=False)
-        run(["container", "delete", container_name], check=False)
+        run(
+            ["container", "stop", container_name],
+            check=False,
+            timeout=_RUNNER_CLEANUP_TIMEOUT_SECONDS,
+        )
+        run(
+            ["container", "delete", container_name],
+            check=False,
+            timeout=_RUNNER_CLEANUP_TIMEOUT_SECONDS,
+        )
 
 
 def _probe_missing_executables(
@@ -661,6 +677,9 @@ def _execute_phase(
         raise
     finally:
         _restore_sigterm(previous_sigterm)
+
+    if returncode != 0:
+        _stop_execution(runner, container_name, proc)
 
     detail_lines = (
         tail

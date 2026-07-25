@@ -52,3 +52,18 @@ def test_deno_dns_failure_under_offline_policy_is_an_environment_gap() -> None:
 
     assert status == "environment_gap"
     assert diagnostics[0].kind == "network_policy"
+
+
+def test_read_only_runner_metadata_has_actionable_storage_diagnostic() -> None:
+    status, diagnostics = diagnose_failure(
+        125,
+        (
+            "Error waiting for container: write "
+            "/var/lib/desktop-containerd/daemon/meta.db: read-only file system"
+        ),
+        failed_phase="prepare",
+    )
+
+    assert status == "infra_failure"
+    assert diagnostics[0].kind == "runner_storage"
+    assert "Free host storage" in diagnostics[0].message

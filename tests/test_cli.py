@@ -178,6 +178,8 @@ def test_cache_prune_exposes_evidence_limits(
                 "0.5",
                 "--max-evidence-entries",
                 "256",
+                "--max-volume-gib",
+                "2.5",
                 "--json",
             ]
         )
@@ -187,6 +189,7 @@ def test_cache_prune_exposes_evidence_limits(
 
     assert observed["max_evidence_bytes"] == int(0.5 * 1024**3)
     assert observed["max_evidence_entries"] == 256
+    assert observed["max_volume_bytes"] == int(2.5 * 1024**3)
 
 
 def test_doctor_rejects_legacy_apple_container(

@@ -153,10 +153,44 @@ prepared state cannot be mistaken for current proofs.
 
 ## Remaining validation
 
-- Rust was planned but not compiled in this trial because it is a substantially
-  larger build; it remains covered by unit and container-runner tests.
 - Elysia's separate `test/cloudflare` manifest remains an explicit warning.
   The root quick baseline does not claim to prove that environment.
+
+### Rust completion — 2026-07-26
+
+The previously deferred Rust target was completed against
+`BurntSushi/ripgrep@f9c05a949d1a0dc8e16dee28ca9605d38611faeb`.
+The digest-pinned `rust:bookworm` preparation container fetched the locked
+dependencies, then a separate network-disabled container passed
+`cargo test --offline --workspace`.
+
+| Observation | End-to-end | Runner | Preparation |
+|---|---:|---:|---:|
+| cold PASS | 242.776 s | 179.974 s | 109.685 s, cache miss |
+| warm PASS with tests rerun | 62.219 s | 56.016 s | 3.984 s, cache hit |
+
+This closes the physical execution gap across the six detected ecosystems.
+
+## Storage-pressure follow-up
+
+A forced Deno rerun exposed a host with only about 5 MiB free on the filesystem
+holding Docker Desktop and the default app cache. Docker's metadata database
+became read-only after dependency preparation and left the client unable to
+remove its container or old prepared volumes. At that point gh-freshclone had
+18 prepared volumes using about 4.3 GiB and 2.75 GiB of host dependency cache.
+The count-only limit was therefore insufficient even though it had not reached
+24 volumes.
+
+Version 0.5.0 adds measured prepared-volume bytes, a 3 GiB default volume
+budget, a 2 GiB pre-execution host reserve, robust Windows cleanup of
+Linux-created cache trees (including a real 270-character Cargo path), bounded
+runner metadata calls, visible runner-removal warnings, non-zero execution
+cleanup, and a specific read-only runner-storage diagnostic. The repaired
+pruner removed 1,890,663,264 bytes of the previously undeletable Rust cache and
+reduced prepared volumes from 4,464,499,998 to 2,928,699,999 bytes by removing
+only the eight oldest app-owned volumes. Both operations completed with no
+warnings. The reserve is checked only after an immutable PASS miss, so low disk
+does not disable the fastest cached proof.
 
 ## Exact-target materialization follow-up
 

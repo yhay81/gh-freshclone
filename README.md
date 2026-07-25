@@ -271,13 +271,29 @@ Set `GH_FRESHCLONE_CACHE` to override the host location.
 gh-freshclone cache status
 gh-freshclone cache status --json
 gh-freshclone cache prune
-gh-freshclone cache prune --max-gib 3 --max-volumes 12 --max-age-days 14
+gh-freshclone cache prune --max-gib 3 --max-volume-gib 2 \
+  --max-volumes 12 --max-age-days 14
 gh-freshclone cache prune --max-evidence-gib 0.5 --max-evidence-entries 256
 ```
 
 Automatic maintenance runs at most once per day. Defaults are 5 GiB and 128
 dependency-cache entries, 1 GiB and 512 receipt/log evidence bundles, 24
-prepared volumes, and 30 days. A cache hit refreshes its receipt's LRU time.
+prepared volumes with a 3 GiB measured-volume budget, and 30 days. A cache hit
+refreshes its receipt's LRU time. Docker and Podman volume usage comes from
+runner metadata without mounting or executing cached content; Apple
+`container` retains the count and age limits when byte accounting is
+unavailable. Metadata calls are bounded, so a stopped runner cannot turn
+`cache status` into an unbounded wait. Non-zero runs explicitly retry named
+container cleanup, and Docker/Podman execution containers carry app ownership
+labels for diagnosis.
+
+Before a cache-miss execution, the app preserves 2 GiB free on the filesystems
+holding its cache and temporary checkout. It first removes only reclaimable
+app-owned cache, tightening the measured prepared-volume budget further when
+the normal limits are not enough; if the reserve is still unavailable, the
+check stops before cloning with an actionable error. An existing immutable
+PASS receipt remains usable because it needs neither a checkout nor a
+container.
 Evidence from incompatible receipt/execution-policy versions, dangling PASS
 indexes, and interrupted-run logs are recovered by the same maintenance path.
 It never invokes a global runner prune. Removal is limited to host paths below

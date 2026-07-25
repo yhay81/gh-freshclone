@@ -49,6 +49,8 @@ def test_docker_command_is_limited_and_passes_no_host_environment(
     assert "--cpus=2" in command
     assert "--memory=4g" in command
     assert "--name=gh-freshclone-test" in command
+    assert "--label=gh-freshclone.managed=true" in command
+    assert "--label=gh-freshclone.kind=execution" in command
     assert "--tmpfs=/tmp:rw,exec,nosuid,nodev,size=2g" in command
     assert "GH_TOKEN" not in rendered
     assert "GITHUB_TOKEN" not in rendered
@@ -563,6 +565,38 @@ def test_phase_log_is_bounded_while_process_output_is_drained(
     assert result.returncode == 0
     assert log_path.stat().st_size <= 256
     assert "output truncated at 256 bytes" in log_path.read_text(encoding="utf-8")
+
+
+def test_nonzero_runner_exit_attempts_named_container_cleanup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    runner_commands: list[tuple[tuple[str, ...], float | None]] = []
+    monkeypatch.setattr(
+        runners,
+        "run",
+        lambda command, **kwargs: (
+            runner_commands.append((tuple(command), kwargs.get("timeout")))
+            or Completed(tuple(command), 0, "", "")
+        ),
+    )
+
+    result = runners._execute_phase(
+        runner="docker",
+        command=[sys.executable, "-c", "raise SystemExit(125)"],
+        container_name="gh-freshclone-failed-prepare",
+        log_path=tmp_path / "failed.log",
+        phase="prepare",
+        echo=False,
+    )
+
+    assert result.returncode == 125
+    assert runner_commands == [
+        (
+            ("docker", "rm", "--force", "gh-freshclone-failed-prepare"),
+            15,
+        ),
+    ]
 
 
 def test_default_sigterm_cleans_up_named_container_before_exit(

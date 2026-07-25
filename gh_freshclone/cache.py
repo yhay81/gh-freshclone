@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import re
 import shutil
 import stat
+import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -20,7 +22,9 @@ from .constants import (
     DEFAULT_MAX_ENTRIES,
     DEFAULT_MAX_EVIDENCE_BYTES,
     DEFAULT_MAX_EVIDENCE_ENTRIES,
+    DEFAULT_MAX_VOLUME_BYTES,
     DEFAULT_MAX_VOLUMES,
+    DEFAULT_MIN_FREE_BYTES,
 )
 from .model import EXECUTION_POLICY_VERSION, RECEIPT_VERSION
 from .process import run
@@ -29,8 +33,17 @@ from .receipts import cache_namespace, cache_root
 _VOLUME_NAME = re.compile(
     r"ghfc-[a-f0-9]{8,12}-[a-f0-9]{12}-[A-Za-z0-9_.-]+$"
 )
+_HUMAN_SIZE = re.compile(
+    r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[kmgtpe]?i?b)\Z",
+    re.IGNORECASE,
+)
 _LAST_USED = ".gh-freshclone-last-used"
 _CACHE_STATE_LOCK_KEY = "gh-freshclone-cache-state-v1"
+_RUNNER_METADATA_TIMEOUT_SECONDS = 15
+
+
+class CacheSpaceError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -38,6 +51,8 @@ class CacheReport:
     host_bytes: int
     host_entries: int
     prepared_volumes: int
+    prepared_volume_bytes: int = 0
+    prepared_volume_size_complete: bool = False
     evidence_bytes: int = 0
     evidence_entries: int = 0
     removed_bytes: int = 0
@@ -45,6 +60,7 @@ class CacheReport:
     removed_evidence_bytes: int = 0
     removed_evidence_entries: int = 0
     removed_volumes: int = 0
+    removed_volume_bytes: int = 0
     warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,6 +80,71 @@ class _EvidenceEntry:
     size: int
     last_used: float
     stale: bool = False
+
+
+def _storage_status() -> list[tuple[Path, int]]:
+    paths = (cache_root(), Path(tempfile.gettempdir()))
+    status: list[tuple[Path, int]] = []
+    devices: set[int] = set()
+    for candidate in paths:
+        path = candidate
+        while not path.exists() and path != path.parent:
+            path = path.parent
+        try:
+            device = path.stat().st_dev
+            free = shutil.disk_usage(path).free
+        except OSError:
+            continue
+        if device in devices:
+            continue
+        devices.add(device)
+        status.append((path, free))
+    return status
+
+
+def ensure_storage_reserve(
+    *,
+    min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
+) -> None:
+    """Reclaim app cache before a fresh run can exhaust its host filesystem."""
+
+    if min_free_bytes < 0:
+        raise ValueError("minimum free-space reserve cannot be negative")
+    status = _storage_status()
+    deficits = [min_free_bytes - free for _, free in status if free < min_free_bytes]
+    if not deficits:
+        return
+    reclaim = max(deficits) + 256 * 1024**2
+    current_host_bytes = sum(entry.size for entry in _host_entries())
+    report = prune_cache(max_bytes=max(0, current_host_bytes - reclaim))
+    status = _storage_status()
+    low = [(path, free) for path, free in status if free < min_free_bytes]
+    if (
+        low
+        and report.prepared_volume_size_complete
+        and report.prepared_volume_bytes
+    ):
+        remaining_reclaim = (
+            max(min_free_bytes - free for _, free in low)
+            + 256 * 1024**2
+        )
+        prune_cache(
+            max_volume_bytes=max(
+                0,
+                report.prepared_volume_bytes - remaining_reclaim,
+            )
+        )
+        status = _storage_status()
+        low = [(path, free) for path, free in status if free < min_free_bytes]
+    if not low:
+        return
+    path, free = min(low, key=lambda item: item[1])
+    raise CacheSpaceError(
+        "insufficient free space for a fresh baseline: "
+        f"{path} has {free / 1024**3:.2f} GiB free; "
+        f"{min_free_bytes / 1024**3:.2f} GiB is required after pruning "
+        "app-owned cache"
+    )
 
 
 def _registry_path() -> Path:
@@ -166,6 +247,7 @@ def _discover_managed_volumes() -> list[dict[str, Any]]:
                 "{{.Name}}",
             ],
             check=False,
+            timeout=_RUNNER_METADATA_TIMEOUT_SECONDS,
         )
         if listed.returncode != 0:
             continue
@@ -184,41 +266,11 @@ def _discover_managed_volumes() -> list[dict[str, Any]]:
     return discovered
 
 
-def _volume_state(runner: str, name: str) -> bool | None:
-    """Return True/False for known state, or None when the runner is unavailable."""
-
-    if runner not in {"docker", "podman", "container"} or not _VOLUME_NAME.fullmatch(name):
-        return False
-    if shutil.which(runner) is None:
-        return None
-    inspected = run([runner, "volume", "inspect", name], check=False)
-    if inspected.returncode == 0:
-        return True
-    detail = (inspected.stderr or inspected.stdout).lower()
-    if any(
-        marker in detail
-        for marker in (
-            "no such volume",
-            "volume not found",
-            "does not exist",
-        )
-    ):
-        return False
-    return None
-
-
 def _managed_volumes() -> list[dict[str, Any]]:
-    volumes = [
-        item
-        for item in _read_registry()
-        if (
-            _volume_state(
-                str(item.get("runner")),
-                str(item.get("name")),
-            )
-            is not False
-        )
-    ]
+    # Keep the local ledger when a runner is stopped. A single label-filtered
+    # discovery call recovers missing ledger entries; prune later forgets both
+    # removed volumes and already-absent records without N per-volume probes.
+    volumes = _read_registry()
     keys = {
         (str(item.get("runner")), str(item.get("name")))
         for item in volumes
@@ -229,6 +281,85 @@ def _managed_volumes() -> list[dict[str, Any]]:
             volumes.append(item)
             keys.add(key)
     return volumes
+
+
+def _parse_human_size(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return max(0, int(value))
+    if not isinstance(value, str):
+        return None
+    match = _HUMAN_SIZE.fullmatch(value.strip())
+    if match is None:
+        return None
+    unit = match.group("unit").lower()
+    if unit == "b":
+        multiplier = 1
+    else:
+        exponent = "kmgtpe".index(unit[0]) + 1
+        multiplier = (1024 if "i" in unit else 1000) ** exponent
+    return int(float(match.group("value")) * multiplier)
+
+
+def _runner_volume_sizes(runner: str) -> dict[str, int] | None:
+    """Read volume usage from runner metadata without mounting cache content."""
+
+    if runner not in {"docker", "podman"} or shutil.which(runner) is None:
+        return None
+    command = [runner, "system", "df"]
+    if runner == "docker":
+        command.append("--verbose")
+    command.extend(("--format", "json"))
+    completed = run(
+        command,
+        check=False,
+        timeout=_RUNNER_METADATA_TIMEOUT_SECONDS,
+    )
+    if completed.returncode != 0:
+        return None
+    try:
+        payload = json.loads(completed.stdout)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    records = payload.get("Volumes", payload.get("volumes"))
+    if not isinstance(records, list):
+        return None
+    sizes: dict[str, int] = {}
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("Name", item.get("name"))
+        size = _parse_human_size(item.get("Size", item.get("size")))
+        if isinstance(name, str) and size is not None:
+            sizes[name] = size
+    return sizes
+
+
+def _prepared_volume_sizes(
+    volumes: list[dict[str, Any]],
+) -> tuple[dict[tuple[str, str], int], bool]:
+    sizes: dict[tuple[str, str], int] = {}
+    complete = True
+    runners = {
+        str(item["runner"])
+        for item in volumes
+        if isinstance(item.get("runner"), str)
+    }
+    runner_sizes = {
+        runner: _runner_volume_sizes(runner)
+        for runner in runners
+    }
+    for item in volumes:
+        key = (str(item.get("runner")), str(item.get("name")))
+        available = runner_sizes.get(key[0])
+        if available is None or key[1] not in available:
+            complete = False
+            continue
+        sizes[key] = available[key[1]]
+    return sizes, complete
 
 
 def touch_dependency_cache(path: Path) -> None:
@@ -461,12 +592,65 @@ def _remove_host_entry(path: Path) -> tuple[bool, str | None]:
             resolved_root = root.resolve()
             if not path.resolve().is_relative_to(resolved_root):
                 return False, "resolved path is outside the app runner-cache root"
+            removal_path = path
             if os.name == "nt":
-                _unlink_windows_reparse_points(path)
-            shutil.rmtree(path)
+                removal_path = _windows_extended_path(path)
+                _unlink_windows_reparse_points(removal_path)
+            for attempt in range(3):
+                try:
+                    shutil.rmtree(removal_path, onerror=_rmtree_onerror)
+                    break
+                except FileNotFoundError:
+                    break
+                except OSError as exc:
+                    directory_not_empty = (
+                        exc.errno == errno.ENOTEMPTY
+                        or getattr(exc, "winerror", None) == 145
+                    )
+                    if not directory_not_empty or attempt == 2:
+                        raise
     except OSError as exc:
         return False, str(exc)
     return True, None
+
+
+def _windows_extended_path(path: Path) -> Path:
+    """Use a Win32 extended path only after the normal path passed root checks."""
+
+    value = str(path.absolute())
+    if value.startswith("\\\\?\\"):
+        return Path(value)
+    if value.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + value[2:])
+    return Path("\\\\?\\" + value)
+
+
+def _rmtree_onexc(
+    function: Any,
+    path: str,
+    error: BaseException,
+) -> None:
+    """Retry read-only cache nodes and tolerate paths removed by a prior retry."""
+
+    if isinstance(error, FileNotFoundError):
+        return
+    if not isinstance(error, PermissionError):
+        raise error
+    try:
+        os.chmod(path, stat.S_IRWXU)
+        function(path)
+    except FileNotFoundError:
+        return
+
+
+def _rmtree_onerror(
+    function: Any,
+    path: str,
+    error_info: tuple[type[BaseException], BaseException, Any],
+) -> None:
+    """Python 3.11-compatible adapter for the cache cleanup retry."""
+
+    _rmtree_onexc(function, path, error_info[1])
 
 
 def _unlink_windows_reparse_points(root: Path) -> None:
@@ -475,17 +659,23 @@ def _unlink_windows_reparse_points(root: Path) -> None:
     pending = [root]
     while pending:
         current = pending.pop()
-        with os.scandir(current) as entries:
-            for entry in entries:
-                metadata = entry.stat(follow_symlinks=False)
-                attributes = getattr(metadata, "st_file_attributes", 0)
-                if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-                    if attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
-                        os.rmdir(entry.path)
-                    else:
-                        os.unlink(entry.path)
-                elif entry.is_dir(follow_symlinks=False):
-                    pending.append(Path(entry.path))
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        metadata = entry.stat(follow_symlinks=False)
+                        attributes = getattr(metadata, "st_file_attributes", 0)
+                        if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                            if attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
+                                os.rmdir(entry.path)
+                            else:
+                                os.unlink(entry.path)
+                        elif entry.is_dir(follow_symlinks=False):
+                            pending.append(Path(entry.path))
+                    except FileNotFoundError:
+                        continue
+        except FileNotFoundError:
+            continue
 
 
 def _remove_volume(runner: str, name: str) -> bool:
@@ -496,7 +686,22 @@ def _remove_volume(runner: str, name: str) -> bool:
         if runner == "container"
         else [runner, "volume", "rm", name]
     )
-    return run(command, check=False).returncode == 0
+    completed = run(
+        command,
+        check=False,
+        timeout=_RUNNER_METADATA_TIMEOUT_SECONDS,
+    )
+    if completed.returncode == 0:
+        return True
+    detail = (completed.stderr or completed.stdout).lower()
+    return any(
+        marker in detail
+        for marker in (
+            "no such volume",
+            "volume not found",
+            "does not exist",
+        )
+    )
 
 
 def cache_status() -> CacheReport:
@@ -509,10 +714,13 @@ def cache_status() -> CacheReport:
         and isinstance(item.get("name"), str)
         and _VOLUME_NAME.fullmatch(item["name"])
     ]
+    volume_sizes, size_complete = _prepared_volume_sizes(volumes)
     return CacheReport(
         host_bytes=sum(entry.size for entry in entries),
         host_entries=len(entries),
         prepared_volumes=len(volumes),
+        prepared_volume_bytes=sum(volume_sizes.values()),
+        prepared_volume_size_complete=size_complete,
         evidence_bytes=sum(entry.size for entry in evidence) + _index_bytes(),
         evidence_entries=len(evidence),
     )
@@ -526,6 +734,7 @@ def _prune_cache_unlocked(
     max_evidence_entries: int = DEFAULT_MAX_EVIDENCE_ENTRIES,
     max_age_days: int = DEFAULT_MAX_AGE_DAYS,
     max_volumes: int = DEFAULT_MAX_VOLUMES,
+    max_volume_bytes: int = DEFAULT_MAX_VOLUME_BYTES,
     protected_path: Path | None = None,
     protected_evidence: Path | None = None,
     protected_volume: tuple[str, str] | None = None,
@@ -540,6 +749,7 @@ def _prune_cache_unlocked(
         max_evidence_entries,
         max_age_days,
         max_volumes,
+        max_volume_bytes,
     ) < 0:
         raise ValueError("cache limits cannot be negative")
     now = time.time()
@@ -626,7 +836,11 @@ def _prune_cache_unlocked(
         and _VOLUME_NAME.fullmatch(item["name"])
     ]
     valid.sort(key=lambda item: float(item.get("last_used_at", 0)))
+    volume_sizes, _ = _prepared_volume_sizes(valid)
+    remaining_volume_bytes = sum(volume_sizes.values())
     remove_keys: set[tuple[str, str]] = set()
+    removed_volume_bytes = 0
+    failed_volume_removals: dict[tuple[str, str], list[str]] = {}
     protected_volume_keys = set(protected_volumes)
     if protected_volume:
         protected_volume_keys.add(protected_volume)
@@ -636,23 +850,47 @@ def _prune_cache_unlocked(
         if key in protected_volume_keys:
             continue
         last_used = float(item.get("last_used_at", 0))
-        if last_used >= cutoff and remaining_volumes <= max_volumes:
+        volume_size = volume_sizes.get(key)
+        exceeds_byte_limit = (
+            volume_size is not None
+            and remaining_volume_bytes > max_volume_bytes
+        )
+        if (
+            last_used >= cutoff
+            and remaining_volumes <= max_volumes
+            and not exceeds_byte_limit
+        ):
             continue
         with cache_volume_lock(*key):
             if _remove_volume(*key):
                 remove_keys.add(key)
                 remaining_volumes -= 1
+                if volume_size is not None:
+                    remaining_volume_bytes -= volume_size
+                    removed_volume_bytes += volume_size
                 _forget_prepared_volume(*key)
-            elif shutil.which(key[0]) is None:
-                warnings.append(
-                    f"runner unavailable; retained volume record: {key[0]}:{key[1]}"
+            else:
+                reason = (
+                    "runner unavailable"
+                    if shutil.which(key[0]) is None
+                    else "runner rejected removal"
                 )
+                failed_volume_removals.setdefault((reason, key[0]), []).append(key[1])
+
+    for (reason, runner), names in sorted(failed_volume_removals.items()):
+        if len(names) == 1:
+            retained = f"volume record: {runner}:{names[0]}"
+        else:
+            retained = f"{len(names)} managed volume records for {runner}"
+        warnings.append(f"{reason}; retained {retained}")
 
     current = cache_status()
     return CacheReport(
         host_bytes=current.host_bytes,
         host_entries=current.host_entries,
         prepared_volumes=current.prepared_volumes,
+        prepared_volume_bytes=current.prepared_volume_bytes,
+        prepared_volume_size_complete=current.prepared_volume_size_complete,
         evidence_bytes=current.evidence_bytes,
         evidence_entries=current.evidence_entries,
         removed_bytes=removed_bytes,
@@ -660,6 +898,7 @@ def _prune_cache_unlocked(
         removed_evidence_bytes=removed_evidence_bytes,
         removed_evidence_entries=removed_evidence_entries,
         removed_volumes=len(remove_keys),
+        removed_volume_bytes=removed_volume_bytes,
         warnings=tuple(warnings),
     )
 
@@ -672,6 +911,7 @@ def prune_cache(
     max_evidence_entries: int = DEFAULT_MAX_EVIDENCE_ENTRIES,
     max_age_days: int = DEFAULT_MAX_AGE_DAYS,
     max_volumes: int = DEFAULT_MAX_VOLUMES,
+    max_volume_bytes: int = DEFAULT_MAX_VOLUME_BYTES,
     protected_path: Path | None = None,
     protected_evidence: Path | None = None,
     protected_volume: tuple[str, str] | None = None,
@@ -686,6 +926,7 @@ def prune_cache(
         max_evidence_entries=max_evidence_entries,
         max_age_days=max_age_days,
         max_volumes=max_volumes,
+        max_volume_bytes=max_volume_bytes,
         protected_path=protected_path,
         protected_evidence=protected_evidence,
         protected_volume=protected_volume,
