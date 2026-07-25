@@ -42,8 +42,36 @@ Dependency preparation was the only network-enabled phase.
 `fresh` is intentionally reported as `ENVIRONMENT_GAP`, not as a repository
 failure. Its test suite downloads Chrome metadata, npm content, and a JSR WASM
 asset at runtime. Automatic detection does not silently grant network access
-to untrusted tests; a reviewed `.gh-freshclone.toml` can opt in when that is
-the desired baseline.
+to untrusted tests; the operator can opt in explicitly when that is the
+desired baseline.
+
+### Operator-controlled test network — 2026-07-26
+
+The first field trial exposed an awkward policy boundary: automatic plans
+correctly kept Fresh offline, while a repository-owned configuration could
+grant its own test process outbound access and an external operator had no CLI
+override for an otherwise detected plan. Version 0.6.0 makes the caller the
+sole policy authority. `plan` and `check` force every test step offline by
+default; `--test-network enabled` is an explicit opt-in recorded in the plan,
+receipt, PASS index, and single-flight identity.
+
+A native Docker boundary probe used a committed configuration that requested
+network. The default check observed no `eth0`; the explicit opt-in observed
+`eth0`. Both passed, while their receipts and pre-clone PASS indexes remained
+distinct. A legacy offline PASS remains reusable, but a legacy
+network-enabled PASS cannot satisfy an offline request.
+
+The same opt-in was then exercised against
+`denoland/fresh@86d6cdeb331a719cf8b1c85bf5e43c8ffa889b3b`. The effective
+plan changed only `test_network` and its operator-policy warning; its
+dependency fingerprint stayed identical. The 46.097-second check reused the
+verified preparation, enabled the test network, and moved past the previous
+download-policy failure. It then returned the next accurate
+`ENVIRONMENT_GAP`: downloaded Chrome could not load
+`libgobject-2.0.so.0` from the Deno Debian image. The runner took 42.659
+seconds, including a 10.763-second preparation cache hit. Structured
+diagnostics identify the missing shared library and suggest Debian package
+`libglib2.0-0`; the tool does not silently mutate the image.
 
 ## Physical Apple-container validation
 

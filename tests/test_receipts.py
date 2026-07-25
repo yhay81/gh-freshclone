@@ -13,6 +13,7 @@ from gh_freshclone.model import (
     ResourceLimits,
 )
 from gh_freshclone.receipts import (
+    _index_path,
     cache_root,
     dependency_cache_path,
     execution_cache_key,
@@ -190,6 +191,153 @@ def test_resource_limits_have_distinct_receipts_and_pass_indexes(
     )
     assert (
         read_indexed_pass_receipt(plan.repository, "quick", "docker", large)
+        is None
+    )
+
+
+def test_test_network_policies_have_distinct_pass_indexes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    offline = _plan()
+    enabled = replace(
+        offline,
+        steps=(replace(offline.steps[0], test_network="enabled"),),
+    )
+    offline_path = receipt_path(offline, "docker", _LIMITS)
+    enabled_path = receipt_path(enabled, "docker", _LIMITS)
+    for plan, path in ((offline, offline_path), (enabled, enabled_path)):
+        write_receipt(
+            path,
+            Receipt(
+                created_at="2026-07-25T00:00:00+00:00",
+                status="pass",
+                runner="docker",
+                runner_version="Docker 29",
+                host_platform="test",
+                plan=plan,
+                resource_limits=_LIMITS,
+            ),
+        )
+
+    offline_index = read_indexed_pass_receipt(
+        offline.repository,
+        "quick",
+        "docker",
+        _LIMITS,
+        "none",
+    )
+    enabled_index = read_indexed_pass_receipt(
+        enabled.repository,
+        "quick",
+        "docker",
+        _LIMITS,
+        "enabled",
+    )
+
+    assert offline_index is not None
+    assert enabled_index is not None
+    assert offline_index[1] == offline_path
+    assert enabled_index[1] == enabled_path
+    assert offline_index[0]["plan"]["steps"][0]["test_network"] == "none"
+    assert enabled_index[0]["plan"]["steps"][0]["test_network"] == "enabled"
+
+
+def test_safe_legacy_pass_index_remains_reusable(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    plan = _plan()
+    path = receipt_path(plan, "docker", _LIMITS)
+    write_receipt(
+        path,
+        Receipt(
+            created_at="2026-07-25T00:00:00+00:00",
+            status="pass",
+            runner="docker",
+            runner_version="Docker 29",
+            host_platform="test",
+            plan=plan,
+            resource_limits=_LIMITS,
+        ),
+    )
+    current_index = _index_path(
+        plan.repository,
+        plan.profile,
+        "docker",
+        _LIMITS,
+        "none",
+    )
+    legacy_index = _index_path(
+        plan.repository,
+        plan.profile,
+        "docker",
+        _LIMITS,
+        None,
+    )
+    current_index.replace(legacy_index)
+
+    indexed = read_indexed_pass_receipt(
+        plan.repository,
+        plan.profile,
+        "docker",
+        _LIMITS,
+        "none",
+    )
+
+    assert indexed is not None
+    assert indexed[1] == path
+
+
+def test_enabled_legacy_pass_index_is_never_reused_offline(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    base = _plan()
+    plan = replace(
+        base,
+        steps=(replace(base.steps[0], test_network="enabled"),),
+    )
+    path = receipt_path(plan, "docker", _LIMITS)
+    write_receipt(
+        path,
+        Receipt(
+            created_at="2026-07-25T00:00:00+00:00",
+            status="pass",
+            runner="docker",
+            runner_version="Docker 29",
+            host_platform="test",
+            plan=plan,
+            resource_limits=_LIMITS,
+        ),
+    )
+    current_index = _index_path(
+        plan.repository,
+        plan.profile,
+        "docker",
+        _LIMITS,
+        "enabled",
+    )
+    legacy_index = _index_path(
+        plan.repository,
+        plan.profile,
+        "docker",
+        _LIMITS,
+        None,
+    )
+    current_index.replace(legacy_index)
+
+    assert (
+        read_indexed_pass_receipt(
+            plan.repository,
+            plan.profile,
+            "docker",
+            _LIMITS,
+            "none",
+        )
         is None
     )
 

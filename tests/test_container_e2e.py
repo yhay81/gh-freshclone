@@ -152,6 +152,80 @@ def test_guest_architecture():
         _cleanup_test_volumes()
 
 
+def test_test_network_requires_operator_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "network-policy-repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repository)],
+        check=True,
+        capture_output=True,
+    )
+    (repository / ".gh-freshclone.toml").write_text(
+        """
+version = 1
+
+[[steps]]
+ecosystem = "network-policy"
+image = "docker.io/library/alpine:3.22"
+command = "if [ -e /sys/class/net/eth0 ]; then echo network=enabled; else echo network=none; fi"
+test_network = "enabled"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setenv(
+        "GH_FRESHCLONE_CACHE",
+        str(tmp_path / "network-policy-cache"),
+    )
+
+    offline, _, _ = check_repository(
+        str(repository),
+        runner=E2E_RUNNER,
+        use_cache=False,
+        echo=True,
+    )
+    enabled, _, _ = check_repository(
+        str(repository),
+        runner=E2E_RUNNER,
+        use_cache=False,
+        echo=True,
+        test_network="enabled",
+    )
+
+    assert isinstance(offline, Receipt)
+    assert isinstance(enabled, Receipt)
+    assert offline.status == "pass", offline.to_dict()
+    assert enabled.status == "pass", enabled.to_dict()
+    assert offline.results[0].test_network == "none"
+    assert enabled.results[0].test_network == "enabled"
+    assert "network=none" in offline.results[0].detail
+    assert "network=enabled" in enabled.results[0].detail
+    assert "kept every test step offline" in offline.plan.warnings[-1]
+
+
 @pytest.mark.skipif(
     E2E_RUNNER != "container",
     reason="SIGTERM lifecycle probe is specific to Apple container",

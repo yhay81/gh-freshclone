@@ -54,6 +54,23 @@ def test_deno_dns_failure_under_offline_policy_is_an_environment_gap() -> None:
     assert diagnostics[0].kind == "network_policy"
 
 
+def test_missing_shared_library_has_structured_package_hint() -> None:
+    status, diagnostics = diagnose_failure(
+        1,
+        (
+            "chrome: error while loading shared libraries: "
+            "libgobject-2.0.so.0: cannot open shared object file"
+        ),
+        test_network="enabled",
+        failed_phase="test",
+    )
+
+    assert status == "environment_gap"
+    assert diagnostics[0].kind == "missing_shared_library"
+    assert diagnostics[0].subject == "libgobject-2.0.so.0"
+    assert diagnostics[0].suggested_package == "libglib2.0-0"
+
+
 def test_read_only_runner_metadata_has_actionable_storage_diagnostic() -> None:
     status, diagnostics = diagnose_failure(
         125,

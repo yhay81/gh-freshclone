@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 
 from gh_freshclone import cli
+from gh_freshclone.api import ProbeOutcome
 from gh_freshclone.cache import CacheReport
 from gh_freshclone.model import BaselinePlan, Repository
 
@@ -95,6 +96,66 @@ def test_public_exit_codes_for_empty_plan_and_initialization_error(
     monkeypatch.setattr(cli, "create_plan", fail)
 
     assert cli.main(["plan", "owner/repo"]) == 2
+
+
+def test_test_network_policy_is_forwarded_by_plan_and_check(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    repository = Repository(
+        display_name="owner/repo",
+        commit_sha="a" * 40,
+        ref="main",
+        source_url=None,
+        github_repository="owner/repo",
+        local_path=None,
+    )
+    observed: list[tuple[str, str]] = []
+
+    def fake_plan(*args, **kwargs):
+        observed.append(("plan", kwargs["test_network"]))
+        return BaselinePlan(repository=repository, steps=())
+
+    def fake_probe(*args, **kwargs):
+        observed.append(("check", kwargs["test_network"]))
+        return ProbeOutcome(
+            receipt={"status": "pass", "plan": {"repository": {}}},
+            receipt_path=tmp_path / "receipt.json",
+            cached=False,
+        )
+
+    monkeypatch.setattr(cli, "create_plan", fake_plan)
+    monkeypatch.setattr(cli, "probe_repository", fake_probe)
+
+    assert (
+        cli.main(
+            [
+                "plan",
+                "owner/repo",
+                "--test-network",
+                "enabled",
+                "--json",
+            ]
+        )
+        == 1
+    )
+    capsys.readouterr()
+    assert (
+        cli.main(
+            [
+                "check",
+                "owner/repo",
+                "--test-network",
+                "enabled",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert observed == [("plan", "enabled"), ("check", "enabled")]
 
 
 def test_doctor_requires_git_and_a_ready_runner_but_not_github_auth(

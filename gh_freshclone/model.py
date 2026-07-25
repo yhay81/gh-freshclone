@@ -25,7 +25,7 @@ class CheckStep:
     evidence: tuple[str, ...] = ()
     dependency_fingerprint: str = ""
     prepare_command: str = ""
-    test_network: str = "enabled"
+    test_network: str = "none"
     working_directory: str = "."
 
     def __post_init__(self) -> None:
@@ -137,7 +137,7 @@ class StepResult:
     diagnostics: tuple[Diagnostic, ...] = ()
     dependency_cache: str | None = None
     prepare_duration_seconds: float = 0
-    test_network: str = "enabled"
+    test_network: str = "none"
     failed_phase: str | None = None
     prepared_volume: str | None = None
     prepare_cache_hit: bool | None = None

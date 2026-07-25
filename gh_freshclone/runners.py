@@ -63,7 +63,7 @@ class RunnerExecution:
     dependency_cache: str = ""
     prepared_volume: str = ""
     prepare_duration_seconds: float = 0
-    test_network: str = "enabled"
+    test_network: str = "none"
     failed_phase: str | None = None
     prepare_cache_hit: bool | None = None
 

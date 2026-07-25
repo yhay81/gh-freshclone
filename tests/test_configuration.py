@@ -91,6 +91,24 @@ command = "true"
     assert plan.steps[0].ecosystem == "custom"
     assert plan.steps[0].command == "true"
     assert plan.steps[0].prepare_command == ""
+    assert plan.steps[0].test_network == "none"
+
+
+def test_config_must_explicitly_request_test_network(tmp_path: Path) -> None:
+    (tmp_path / ".gh-freshclone.toml").write_text(
+        """
+version = 1
+[[steps]]
+ecosystem = "custom"
+image = "docker.io/library/alpine:3"
+command = "true"
+test_network = "enabled"
+""",
+        encoding="utf-8",
+    )
+
+    plan = detect_plan(_repository(), tmp_path)
+
     assert plan.steps[0].test_network == "enabled"
 
 
@@ -129,17 +147,6 @@ command = "pytest"
 typo = true
 """,
             "unknown keys: typo",
-        ),
-        (
-            """
-version = 1
-[[steps]]
-ecosystem = "python"
-image = "python:3.13"
-command = "pytest"
-test_network = "none"
-""",
-            "needs prepare_command",
         ),
         (
             """
