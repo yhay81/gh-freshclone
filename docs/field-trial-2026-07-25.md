@@ -52,8 +52,8 @@ Apple `container` 1.1.0 (commit `5973b9c`), 4 CPUs, and an 8 GiB container
 limit. The container system was started from a stopped state, and `doctor`
 reported the Apple runner as supported and ready.
 
-The dedicated native E2E suite passed both probes in 125.63 seconds, including
-the first image pulls:
+The initial dedicated native E2E suite passed both probes in 125.63 seconds,
+including the first image pulls:
 
 - a committed Python fixture passed through distinct network-enabled
   preparation and network-disabled test containers;
@@ -77,6 +77,26 @@ phase containers, and a network-disabled test phase. This closes the
 physical-Mac validation gap; the earlier Windows and native Apple-container
 measurements are development observations rather than cross-platform
 performance guarantees.
+
+### macOS hardening follow-up — 2026-07-26
+
+A real SIGTERM cancellation probe found that the existing execution policy
+stopped the Apple VM but could leave its named container behind. Execution
+policy v16 turns the default SIGTERM action into a cleanup-capable exit, stops
+and deletes the named container, and mounts `/tmp` as tmpfs on Apple
+`container`.
+
+The expanded native suite passed all three probes in 25.12 seconds with warm
+images. It now verifies runtime behavior rather than only generated flags and
+receipt fields:
+
+- the offline test container exposes only the loopback network interface;
+- the committed `/input` mount rejects a write attempt;
+- `/tmp` is a tmpfs mount;
+- the Linux guest runs natively as `aarch64`;
+- host checkout and temporary paths containing spaces and Japanese characters
+  complete successfully;
+- SIGTERM exits with status 143 and leaves no named Apple container.
 
 ## Defects found and corrected
 

@@ -81,6 +81,7 @@ def test_apple_container_command_uses_volume_and_resource_limits(
     assert "--cpus" in command
     assert "--memory" in command
     assert "--entrypoint" in command
+    assert command[command.index("--tmpfs") + 1] == "/tmp"
     assert command[command.index("--name") + 1] == "gh-freshclone-test"
     assert (
         f"type=bind,source={tmp_path.resolve()},target=/input,readonly"
@@ -562,6 +563,72 @@ def test_phase_log_is_bounded_while_process_output_is_drained(
     assert result.returncode == 0
     assert log_path.stat().st_size <= 256
     assert "output truncated at 256 bytes" in log_path.read_text(encoding="utf-8")
+
+
+def test_default_sigterm_cleans_up_named_container_before_exit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    signal_handlers: list[object] = []
+    runner_commands: list[tuple[str, ...]] = []
+
+    def install_signal(_signum, handler):
+        signal_handlers.append(handler)
+
+    monkeypatch.setattr(runners.signal, "getsignal", lambda _signum: runners.signal.SIG_DFL)
+    monkeypatch.setattr(runners.signal, "signal", install_signal)
+    monkeypatch.setattr(
+        runners,
+        "run",
+        lambda command, **_kwargs: (
+            runner_commands.append(tuple(command))
+            or Completed(tuple(command), 0, "", "")
+        ),
+    )
+
+    class SignalOutput:
+        def readline(self, _size: int) -> str:
+            handler = signal_handlers[0]
+            assert callable(handler)
+            handler(runners.signal.SIGTERM, None)
+            raise AssertionError("SIGTERM handler must exit")
+
+    class RunningProcess:
+        stdout = SignalOutput()
+        terminated = False
+
+        def poll(self):
+            return None if not self.terminated else 0
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.terminated = True
+
+    process = RunningProcess()
+    monkeypatch.setattr(runners.subprocess, "Popen", lambda *args, **kwargs: process)
+
+    with pytest.raises(SystemExit) as interrupted:
+        runners._execute_phase(
+            runner="container",
+            command=["container", "run", "image"],
+            container_name="gh-freshclone-sigterm-test",
+            log_path=tmp_path / "sigterm.log",
+            phase="test",
+            echo=False,
+        )
+
+    assert interrupted.value.code == 128 + runners.signal.SIGTERM
+    assert process.terminated is True
+    assert runner_commands == [
+        ("container", "stop", "gh-freshclone-sigterm-test"),
+        ("container", "delete", "gh-freshclone-sigterm-test"),
+    ]
+    assert signal_handlers[-1] == runners.signal.SIG_DFL
 
 
 def test_exit_classification() -> None:

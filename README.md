@@ -349,6 +349,7 @@ Repository tests execute untrusted code. `gh-freshclone` therefore:
   extraction;
 - enables `no-new-privileges` with Docker and Podman;
 - limits CPU and memory on every runner, and process count on Docker/Podman;
+- mounts `/tmp` as a disposable tmpfs on every runner;
 - removes named test containers on normal completion, error, or interruption.
 
 Only dependency preparation needs outbound network access. A repository can

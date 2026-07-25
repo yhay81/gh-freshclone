@@ -4,13 +4,16 @@ import hashlib
 import json
 import re
 import shlex
+import signal
 import subprocess  # nosec B404
 import sys
+import threading
 import time
 import uuid
 from contextlib import ExitStack
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 from . import runner_policy as _runner_policy
 from .cache import (
@@ -36,6 +39,7 @@ validate_runner_limits = _runner_policy.validate_runner_limits
 MAX_LOG_BYTES = 10 * 1024 * 1024
 _PREPARE_CACHE_HIT = "gh-freshclone: verified preparation cache hit"
 _PREPARE_MARKER = ".gh-freshclone-prepared-v1"
+_CONTAINER_TMP = str(PurePosixPath("/", "tmp"))
 _OCI_IMAGE_REFERENCE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._:/-]*"
     r"(?:@[A-Za-z0-9_+.-]+:[A-Fa-f0-9]+)?$"
@@ -67,6 +71,27 @@ class _PhaseExecution:
     duration_seconds: float
     detail: str
     failure_candidates: frozenset[str]
+
+
+def _install_cleanup_sigterm() -> Any | None:
+    """Turn the default SIGTERM action into a cleanup-capable process exit."""
+
+    if threading.current_thread() is not threading.main_thread():
+        return None
+    previous = signal.getsignal(signal.SIGTERM)
+    if previous != signal.SIG_DFL:
+        return None
+
+    def terminate(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, terminate)
+    return previous
+
+
+def _restore_sigterm(previous: Any | None) -> None:
+    if previous is not None:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def _console_safe(value: str, encoding: str | None) -> str:
@@ -410,6 +435,8 @@ def build_runner_command(
             "CI=1",
             "--env",
             "HOME=/tmp/freshclone-home",
+            "--tmpfs",
+            _CONTAINER_TMP,
             "--mount",
             f"type=bind,source={workspace},target=/input,readonly",
             "--entrypoint",
@@ -535,6 +562,7 @@ def _execute_phase(
     )
     written_bytes = log_path.stat().st_size if log_path.exists() else 0
     log_truncated = written_bytes >= MAX_LOG_BYTES
+    previous_sigterm = _install_cleanup_sigterm()
     try:
         with log_path.open(
             "a",
@@ -631,6 +659,8 @@ def _execute_phase(
     except BaseException:
         _stop_execution(runner, container_name, proc)
         raise
+    finally:
+        _restore_sigterm(previous_sigterm)
 
     detail_lines = (
         tail

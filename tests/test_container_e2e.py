@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
+import sys
+import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -32,11 +36,95 @@ def test_native_runner_executes_prepare_then_offline_test(
     git_repository: Path,
     tmp_path: Path,
 ) -> None:
+    repository = tmp_path / "repository with spaces_日本語"
+    git_repository.rename(repository)
+    boundary_test = repository / "tests" / "test_runner_boundary.py"
+    boundary_source = """
+import platform
+from pathlib import Path
+
+EXPECTED_ARCH = None
+
+
+def test_network_is_absent_and_input_is_read_only():
+    interfaces = {path.name for path in Path("/sys/class/net").iterdir()}
+    if EXPECTED_ARCH is not None:
+        assert interfaces == {"lo"}
+    ipv4_routes = [
+        line.split()
+        for line in Path("/proc/net/route").read_text().splitlines()[1:]
+    ]
+    assert not any(columns[1] == "00000000" for columns in ipv4_routes)
+    ipv6_routes = [
+        line.split()
+        for line in Path("/proc/net/ipv6_route").read_text().splitlines()
+    ]
+    ipv6_defaults = [
+        columns
+        for columns in ipv6_routes
+        if columns[0] == "0" * 32 and columns[1] == "00"
+    ]
+    assert all(
+        columns[5].lower() == "ffffffff" and columns[-1] == "lo"
+        for columns in ipv6_defaults
+    )
+    tmp_mount = next(
+        line
+        for line in Path("/proc/self/mountinfo").read_text().splitlines()
+        if " /tmp " in line
+    )
+    assert " - tmpfs " in tmp_mount
+    try:
+        Path("/input/gh-freshclone-write-probe").write_text("must fail")
+    except OSError:
+        pass
+    else:
+        raise AssertionError("/input must be read-only")
+
+
+def test_guest_architecture():
+    if EXPECTED_ARCH is not None:
+        assert platform.machine() == EXPECTED_ARCH
+""".lstrip()
+    if E2E_RUNNER == "container":
+        boundary_source = boundary_source.replace(
+            "EXPECTED_ARCH = None",
+            'EXPECTED_ARCH = "aarch64"',
+        )
+    boundary_test.write_text(
+        boundary_source,
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", str(boundary_test.relative_to(repository))],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "add runner boundary probe",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    if E2E_RUNNER == "container":
+        runner_temp = tmp_path / "Apple container temp_日本語"
+        runner_temp.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(runner_temp))
     cache = tmp_path / "e2e-cache"
     monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(cache))
     try:
         receipt, _, cached = check_repository(
-            str(git_repository),
+            str(repository),
             runner=E2E_RUNNER,
             use_cache=False,
             echo=True,
@@ -62,6 +150,82 @@ def test_native_runner_executes_prepare_then_offline_test(
         assert "test (network none) phase" in log
     finally:
         _cleanup_test_volumes()
+
+
+@pytest.mark.skipif(
+    E2E_RUNNER != "container",
+    reason="SIGTERM lifecycle probe is specific to Apple container",
+)
+def test_apple_container_removes_named_vm_on_sigterm(tmp_path: Path) -> None:
+    name = f"gh-freshclone-e2e-sigterm-{os.getpid()}"
+    log_path = tmp_path / "sigterm.log"
+    command = [
+        "container",
+        "run",
+        "--rm",
+        "--name",
+        name,
+        "--network",
+        "none",
+        "--tmpfs",
+        "/tmp",
+        "--entrypoint",
+        "sh",
+        "docker.io/library/node:24-bookworm",
+        "-c",
+        "sleep 120",
+    ]
+    child = (
+        "from pathlib import Path\n"
+        "from gh_freshclone.runners import _execute_phase\n"
+        f"_execute_phase(runner='container', command={command!r}, "
+        f"container_name={name!r}, log_path=Path({str(log_path)!r}), "
+        "phase='SIGTERM E2E', echo=False)\n"
+    )
+    process = subprocess.Popen(  # nosec B603
+        [sys.executable, "-c", child],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    def container_exists() -> bool:
+        listed = subprocess.run(  # nosec B603
+            ["container", "list", "--all"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return name in listed.stdout
+
+    try:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and not container_exists():
+            if process.poll() is not None:
+                pytest.fail(f"phase process exited early with {process.returncode}")
+            time.sleep(0.1)
+        assert container_exists(), "named Apple container did not start"
+
+        process.terminate()
+        assert process.wait(timeout=20) == 128 + signal.SIGTERM
+
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and container_exists():
+            time.sleep(0.1)
+        assert not container_exists(), "SIGTERM left a named Apple container behind"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        subprocess.run(  # nosec B603
+            ["container", "stop", name],
+            check=False,
+            capture_output=True,
+        )
+        subprocess.run(  # nosec B603
+            ["container", "delete", name],
+            check=False,
+            capture_output=True,
+        )
 
 
 def test_native_runner_persists_pnpm_and_modules_across_phases(

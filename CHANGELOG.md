@@ -8,6 +8,12 @@ adapter versions evolve independently.
 
 - Make PyPI publication opt-in through the `PYPI_TRUSTED_PUBLISHING`
   repository variable while keeping verified GitHub releases independent.
+- Remove named Apple containers when a default SIGTERM interrupts execution,
+  and mount `/tmp` as tmpfs with Apple `container`. Execution policy v16
+  prevents reuse of evidence produced without these guarantees.
+- Expand native runner E2E coverage to verify the network-disabled interface,
+  read-only committed input, tmpfs, native Apple guest architecture,
+  whitespace/Unicode host paths, and interruption cleanup.
 
 ## 0.3.2
 
