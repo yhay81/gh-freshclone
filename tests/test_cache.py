@@ -1,22 +1,34 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
+import stat
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from gh_freshclone.cache import (
+    CacheReport,
+    CacheSpaceError,
+    _parse_human_size,
+    _remove_host_entry,
+    _remove_volume,
+    _rmtree_onexc,
     _unlink_windows_reparse_points,
+    _windows_extended_path,
     cache_lock,
     cache_path_lock,
     cache_status,
     cache_volume_lock,
+    ensure_storage_reserve,
     prune_cache,
     touch_dependency_cache,
 )
 from gh_freshclone.model import EXECUTION_POLICY_VERSION, RECEIPT_VERSION
+from gh_freshclone.process import Completed
 
 
 def _entry(root: Path, fingerprint: str, *, size: int, age: int) -> Path:
@@ -118,6 +130,154 @@ def test_cache_status_counts_receipt_log_evidence(
 
     assert report.evidence_entries == 1
     assert report.evidence_bytes >= 7
+
+
+def test_runner_volume_size_units_are_normalized_to_bytes() -> None:
+    assert _parse_human_size("0B") == 0
+    assert _parse_human_size("1.5MB") == 1_500_000
+    assert _parse_human_size("2 GiB") == 2 * 1024**3
+    assert _parse_human_size("N/A") is None
+
+
+def test_low_storage_prunes_app_cache_before_fresh_execution(
+    monkeypatch,
+) -> None:
+    gib = 1024**3
+    readings = iter(
+        [
+            [(Path("cache"), gib)],
+            [(Path("cache"), 3 * gib)],
+        ]
+    )
+    observed: dict[str, int] = {}
+    monkeypatch.setattr(
+        "gh_freshclone.cache._storage_status",
+        lambda: next(readings),
+    )
+    monkeypatch.setattr(
+        "gh_freshclone.cache._host_entries",
+        lambda: [SimpleNamespace(size=3 * gib)],
+    )
+    monkeypatch.setattr(
+        "gh_freshclone.cache.prune_cache",
+        lambda **kwargs: (
+            observed.update(kwargs)
+            or CacheReport(
+                host_bytes=0,
+                host_entries=0,
+                prepared_volumes=0,
+            )
+        ),
+    )
+
+    ensure_storage_reserve(min_free_bytes=2 * gib)
+
+    assert observed["max_bytes"] == int(1.75 * gib)
+
+
+def test_low_storage_tightens_measured_volume_budget_when_host_prune_is_not_enough(
+    monkeypatch,
+) -> None:
+    gib = 1024**3
+    readings = iter(
+        [
+            [(Path("cache"), gib)],
+            [(Path("cache"), gib)],
+            [(Path("cache"), 3 * gib)],
+        ]
+    )
+    calls: list[dict[str, int]] = []
+
+    monkeypatch.setattr(
+        "gh_freshclone.cache._storage_status",
+        lambda: next(readings),
+    )
+    monkeypatch.setattr("gh_freshclone.cache._host_entries", list)
+
+    def prune(**kwargs):
+        calls.append(kwargs)
+        return CacheReport(
+            host_bytes=0,
+            host_entries=0,
+            prepared_volumes=3,
+            prepared_volume_bytes=3 * gib,
+            prepared_volume_size_complete=True,
+        )
+
+    monkeypatch.setattr("gh_freshclone.cache.prune_cache", prune)
+
+    ensure_storage_reserve(min_free_bytes=2 * gib)
+
+    assert calls[0]["max_bytes"] == 0
+    assert calls[1]["max_volume_bytes"] == int(1.75 * gib)
+
+
+def test_low_storage_fails_before_fresh_execution_when_prune_cannot_recover(
+    monkeypatch,
+) -> None:
+    gib = 1024**3
+    monkeypatch.setattr(
+        "gh_freshclone.cache._storage_status",
+        lambda: [(Path("cache"), gib)],
+    )
+    monkeypatch.setattr("gh_freshclone.cache._host_entries", list)
+    monkeypatch.setattr(
+        "gh_freshclone.cache.prune_cache",
+        lambda **kwargs: CacheReport(
+            host_bytes=0,
+            host_entries=0,
+            prepared_volumes=0,
+        ),
+    )
+
+    with pytest.raises(CacheSpaceError, match="1.00 GiB free"):
+        ensure_storage_reserve(min_free_bytes=2 * gib)
+
+
+def test_rmtree_retry_makes_read_only_cache_node_writable(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    monkeypatch.setattr(
+        "gh_freshclone.cache.os.chmod",
+        lambda path, mode: calls.append(("chmod", path, mode)),
+    )
+
+    def remove(path: str) -> None:
+        calls.append(("remove", path))
+
+    _rmtree_onexc(remove, "cache-node", PermissionError("read only"))
+
+    assert calls == [
+        ("chmod", "cache-node", stat.S_IRWXU),
+        ("remove", "cache-node"),
+    ]
+
+
+def test_host_cache_cleanup_retries_directory_not_empty(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    entry = _entry(tmp_path, "retry", size=8, age=0)
+    real_rmtree = __import__("shutil").rmtree
+    attempts = 0
+
+    def flaky_rmtree(path, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError(errno.ENOTEMPTY, "directory not empty")
+        return real_rmtree(path, **kwargs)
+
+    monkeypatch.setattr("gh_freshclone.cache.shutil.rmtree", flaky_rmtree)
+
+    removed, error = _remove_host_entry(entry)
+
+    assert removed is True
+    assert error is None
+    assert attempts == 2
 
 
 def test_prune_bounds_evidence_and_removes_its_pass_index(
@@ -225,6 +385,10 @@ def test_cache_status_recovers_labeled_volume_without_registry(
 ) -> None:
     monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
     monkeypatch.setattr(
+        "gh_freshclone.cache._runner_volume_sizes",
+        lambda runner: {},
+    )
+    monkeypatch.setattr(
         "gh_freshclone.cache._discover_managed_volumes",
         lambda: [
             {
@@ -257,6 +421,10 @@ def test_recovered_volume_is_not_treated_as_immediately_expired(
         ],
     )
     monkeypatch.setattr("gh_freshclone.cache._remove_volume", lambda *args: True)
+    monkeypatch.setattr(
+        "gh_freshclone.cache._runner_volume_sizes",
+        lambda runner: {},
+    )
 
     report = prune_cache(
         max_bytes=1024,
@@ -266,6 +434,114 @@ def test_recovered_volume_is_not_treated_as_immediately_expired(
     )
 
     assert report.removed_volumes == 0
+
+
+def test_prune_bounds_prepared_volumes_by_observed_bytes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    monkeypatch.setattr("gh_freshclone.cache.time.time", lambda: 1_900_000_100)
+    oldest = "ghfc-12345678-123456789abc-quick-python-old-p6-e16"
+    recent = "ghfc-12345678-123456789abc-quick-python-new-p6-e16"
+    present = {oldest, recent}
+
+    def managed() -> list[dict[str, object]]:
+        return [
+            {
+                "runner": "docker",
+                "name": name,
+                "created_at": 1_900_000_000,
+                "last_used_at": 1_900_000_000 + index,
+            }
+            for index, name in enumerate((oldest, recent))
+            if name in present
+        ]
+
+    def remove(_runner: str, name: str) -> bool:
+        present.remove(name)
+        return True
+
+    monkeypatch.setattr("gh_freshclone.cache._managed_volumes", managed)
+    monkeypatch.setattr(
+        "gh_freshclone.cache._runner_volume_sizes",
+        lambda runner: {oldest: 100, recent: 100},
+    )
+    monkeypatch.setattr("gh_freshclone.cache._remove_volume", remove)
+
+    report = prune_cache(
+        max_bytes=1024,
+        max_entries=128,
+        max_evidence_bytes=1024,
+        max_evidence_entries=512,
+        max_age_days=30,
+        max_volumes=24,
+        max_volume_bytes=150,
+    )
+
+    assert present == {recent}
+    assert report.prepared_volumes == 1
+    assert report.prepared_volume_bytes == 100
+    assert report.prepared_volume_size_complete is True
+    assert report.removed_volumes == 1
+    assert report.removed_volume_bytes == 100
+
+
+def test_prune_reports_runner_volume_removal_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    name = "ghfc-12345678-123456789abc-quick-python-cache-p6-e16"
+    monkeypatch.setattr(
+        "gh_freshclone.cache._managed_volumes",
+        lambda: [
+            {
+                "runner": "docker",
+                "name": name,
+                "created_at": 0,
+                "last_used_at": 0,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "gh_freshclone.cache._runner_volume_sizes",
+        lambda runner: {name: 100},
+    )
+    monkeypatch.setattr("gh_freshclone.cache._remove_volume", lambda *args: False)
+    monkeypatch.setattr("gh_freshclone.cache.shutil.which", lambda runner: runner)
+
+    report = prune_cache(
+        max_bytes=1024,
+        max_entries=128,
+        max_evidence_bytes=1024,
+        max_evidence_entries=512,
+        max_age_days=100_000,
+        max_volumes=0,
+    )
+
+    assert report.removed_volumes == 0
+    assert report.warnings == (
+        f"runner rejected removal; retained volume record: docker:{name}",
+    )
+
+
+def test_missing_runner_volume_is_successful_ledger_cleanup(
+    monkeypatch,
+) -> None:
+    name = "ghfc-12345678-123456789abc-quick-python-cache-p6-e16"
+    monkeypatch.setattr("gh_freshclone.cache.shutil.which", lambda runner: runner)
+    monkeypatch.setattr(
+        "gh_freshclone.cache.run",
+        lambda *args, **kwargs: Completed(
+            tuple(args[0]),
+            1,
+            "",
+            f"Error: no such volume: {name}",
+        ),
+    )
+
+    assert _remove_volume("docker", name) is True
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point behavior")
@@ -286,6 +562,32 @@ def test_windows_reparse_cleanup_never_follows_link_target(tmp_path: Path) -> No
 
     assert not link.exists()
     assert protected.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-path behavior")
+def test_windows_cache_removal_uses_extended_absolute_path(tmp_path: Path) -> None:
+    extended = str(_windows_extended_path(tmp_path / "cache"))
+
+    assert extended.startswith("\\\\?\\")
+    assert extended.endswith("\\cache")
+
+
+def test_reparse_cleanup_tolerates_disappearing_cache_node(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "cache-entry"
+    root.mkdir()
+    real_scandir = os.scandir
+
+    def disappearing(path):
+        if Path(path) == root:
+            raise FileNotFoundError(path)
+        return real_scandir(path)
+
+    monkeypatch.setattr("gh_freshclone.cache.os.scandir", disappearing)
+
+    _unlink_windows_reparse_points(root)
 
 
 def test_matching_cache_locks_serialize_threads(
@@ -414,6 +716,10 @@ def test_prune_waits_for_in_use_prepared_volume(
         return True
 
     monkeypatch.setattr("gh_freshclone.cache._managed_volumes", managed)
+    monkeypatch.setattr(
+        "gh_freshclone.cache._runner_volume_sizes",
+        lambda runner: {name: 8},
+    )
     monkeypatch.setattr("gh_freshclone.cache._remove_volume", remove)
 
     def prune() -> None:

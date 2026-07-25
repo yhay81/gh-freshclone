@@ -154,9 +154,19 @@ def _check_resolved_repository(
     echo: bool,
     profile: str,
 ) -> tuple[Receipt | dict, Path, bool]:
-    from .cache import cache_path_lock, maybe_prune_cache
+    from .cache import (
+        CacheSpaceError,
+        cache_path_lock,
+        ensure_storage_reserve,
+        maybe_prune_cache,
+    )
     from .detect import detect_plan
     from .diagnostics import diagnose_failure
+
+    try:
+        ensure_storage_reserve()
+    except CacheSpaceError as exc:
+        raise WorkflowError(str(exc)) from exc
 
     with tempfile.TemporaryDirectory(
         prefix="gh-freshclone-check-",

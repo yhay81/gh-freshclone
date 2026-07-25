@@ -6,6 +6,28 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.5.0
+
+- Measure app-owned Docker and Podman prepared-volume usage and enforce a
+  3 GiB byte budget in addition to the existing count and age limits. Expose
+  the measured bytes through `cache status` and add `cache prune
+  --max-volume-gib`.
+- Preserve a 2 GiB host-filesystem reserve before fresh execution. When space
+  is low, reclaim only app-owned cache first and fail before cloning if the
+  reserve cannot be recovered; immutable PASS receipt reuse remains available.
+- Make Windows cache cleanup recover read-only and concurrently disappearing
+  Linux-created nodes, extended-length paths, and transient non-empty
+  directories. Report runner-side volume-removal failures instead of silently
+  claiming a successful prune.
+- Bound cache metadata calls to a stopped runner, replace per-volume
+  availability probes with one label-filtered discovery, label execution
+  containers, and explicitly attempt named-container cleanup after every
+  non-zero runner exit.
+- Diagnose a read-only container metadata store as an actionable runner
+  storage failure rather than a generic infrastructure error.
+- Complete the six-ecosystem physical field trial with a real ripgrep Rust
+  workspace PASS.
+
 ## 0.4.0
 
 - Materialize public GitHub targets with a credential-free, depth-one fetch of

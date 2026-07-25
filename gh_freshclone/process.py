@@ -31,19 +31,36 @@ def run(
     cwd: Path | None = None,
     check: bool = True,
     env: Mapping[str, str] | None = None,
+    timeout: float | None = None,
 ) -> Completed:
     # The command is an argv sequence, never a shell string.
-    proc = subprocess.run(  # nosec B603
-        list(command),
-        cwd=cwd,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-        env=env,
-    )
-    result = Completed(tuple(command), proc.returncode, proc.stdout, proc.stderr)
-    if check and proc.returncode != 0:
-        raise CommandError(command, proc.returncode, proc.stderr or proc.stdout)
+    try:
+        proc = subprocess.run(  # nosec B603
+            list(command),
+            cwd=cwd,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+            env=env,
+            timeout=timeout,
+        )
+        result = Completed(tuple(command), proc.returncode, proc.stdout, proc.stderr)
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        suffix = (
+            f"command timed out after {timeout:g} seconds"
+            if timeout is not None
+            else "command timed out"
+        )
+        result = Completed(
+            tuple(command),
+            124,
+            stdout,
+            f"{stderr.rstrip()}\n{suffix}".lstrip(),
+        )
+    if check and result.returncode != 0:
+        raise CommandError(command, result.returncode, result.stderr or result.stdout)
     return result

@@ -12,6 +12,10 @@ from gh_freshclone.workflow import check_repository, create_plan
 @pytest.fixture(autouse=True)
 def _preferred_runner(monkeypatch) -> None:
     monkeypatch.setattr(workflow, "preferred_runner", lambda runner: "docker")
+    monkeypatch.setattr(
+        "gh_freshclone.cache.ensure_storage_reserve",
+        lambda: None,
+    )
 
 
 def test_create_plan_from_local_repository(git_repository: Path) -> None:
@@ -67,6 +71,10 @@ def test_check_writes_and_reuses_passing_receipt(
         workflow,
         "select_runner",
         lambda runner: pytest.fail("a PASS hit must not probe runner readiness"),
+    )
+    monkeypatch.setattr(
+        "gh_freshclone.cache.ensure_storage_reserve",
+        lambda: pytest.fail("a PASS hit must not require fresh storage"),
     )
     second, second_path, second_cached = check_repository(
         str(git_repository),

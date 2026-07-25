@@ -53,6 +53,29 @@ def diagnose_failure(
         return "pass", ()
 
     lowered = detail.lower()
+    if "read-only file system" in lowered and any(
+        marker in lowered
+        for marker in (
+            "containerd",
+            "docker",
+            "metadata",
+            "meta.db",
+        )
+    ):
+        return (
+            "infra_failure",
+            (
+                Diagnostic(
+                    kind="runner_storage",
+                    message=(
+                        "The container runner's data store became read-only. "
+                        "Free host storage, restart or repair the runner, then retry."
+                    ),
+                    confidence="high",
+                    evidence=("runner metadata write failed on a read-only filesystem",),
+                ),
+            ),
+        )
     if returncode == 125 or any(
         marker in lowered
         for marker in (

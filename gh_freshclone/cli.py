@@ -15,6 +15,7 @@ from .constants import (
     DEFAULT_MAX_ENTRIES,
     DEFAULT_MAX_EVIDENCE_BYTES,
     DEFAULT_MAX_EVIDENCE_ENTRIES,
+    DEFAULT_MAX_VOLUME_BYTES,
     DEFAULT_MAX_VOLUMES,
     PROFILES,
 )
@@ -151,6 +152,11 @@ def _parser() -> argparse.ArgumentParser:
         "--max-age-days", type=int, default=DEFAULT_MAX_AGE_DAYS
     )
     cache_prune.add_argument("--max-volumes", type=int, default=DEFAULT_MAX_VOLUMES)
+    cache_prune.add_argument(
+        "--max-volume-gib",
+        type=float,
+        default=DEFAULT_MAX_VOLUME_BYTES / 1024**3,
+    )
     cache_prune.add_argument(
         "--json", action="store_true", help="print machine-readable JSON"
     )
@@ -312,7 +318,15 @@ def _print_cache_report(payload: dict[str, Any]) -> None:
         f"Evidence:         {evidence_gib:.2f} GiB in "
         f"{payload.get('evidence_entries', 0)} bundles"
     )
-    print(f"Prepared volumes: {payload['prepared_volumes']}")
+    volume_bytes = payload.get("prepared_volume_bytes", 0)
+    volume_size_complete = payload.get("prepared_volume_size_complete", False)
+    if volume_size_complete:
+        volume_detail = f"{volume_bytes / 1024**3:.2f} GiB"
+    elif volume_bytes:
+        volume_detail = f"at least {volume_bytes / 1024**3:.2f} GiB"
+    else:
+        volume_detail = "size unavailable"
+    print(f"Prepared volumes: {payload['prepared_volumes']} ({volume_detail})")
     if payload.get("removed_entries") or payload.get("removed_volumes"):
         removed_gib = payload["removed_bytes"] / 1024**3
         print(
@@ -325,6 +339,11 @@ def _print_cache_report(payload: dict[str, Any]) -> None:
         print(
             f"Removed evidence: {removed_evidence_gib:.2f} GiB, "
             f"{payload['removed_evidence_entries']} bundles"
+        )
+    if payload.get("removed_volume_bytes"):
+        print(
+            "Removed volume data: "
+            f"{payload['removed_volume_bytes'] / 1024**3:.2f} GiB"
         )
     for warning in payload.get("warnings", ()):
         print(f"Warning: {warning}")
@@ -339,7 +358,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.cache_command == "status":
                 report = cache_status()
             else:
-                if args.max_gib < 0 or args.max_evidence_gib < 0:
+                if (
+                    args.max_gib < 0
+                    or args.max_evidence_gib < 0
+                    or args.max_volume_gib < 0
+                ):
                     raise ValueError("cache size limits cannot be negative")
                 report = prune_cache(
                     max_bytes=int(args.max_gib * 1024**3),
@@ -348,6 +371,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_evidence_entries=args.max_evidence_entries,
                     max_age_days=args.max_age_days,
                     max_volumes=args.max_volumes,
+                    max_volume_bytes=int(args.max_volume_gib * 1024**3),
                 )
             payload = report.to_dict()
             if args.json:
