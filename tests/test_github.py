@@ -292,7 +292,7 @@ def test_unavailable_remote_is_reported_as_public_resolution_failure(
         github._resolve_github("owner/private", None)
 
 
-def test_public_github_materialization_uses_credential_free_https(
+def test_public_github_materialization_fetches_only_the_resolved_ref(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -316,9 +316,118 @@ def test_public_github_materialization_uses_credential_free_https(
 
     materialize(repository, tmp_path / "checkout")
 
-    assert commands[0][0:2] == ("git", "clone")
-    assert "https://github.com/owner/repo.git" in commands[0]
+    assert commands[0][0:2] == ("git", "init")
+    assert commands[1][-2:] == (
+        "origin",
+        "https://github.com/owner/repo.git",
+    )
+    fetch = commands[2]
+    assert fetch[0:3] == ("git", "-C", str(tmp_path / "checkout"))
+    assert "fetch" in fetch
+    assert "--depth=1" in fetch
+    assert "--filter=blob:none" in fetch
+    assert "--no-tags" in fetch
+    assert fetch[-2:] == ("origin", "main")
+    assert not any("clone" in command for command in commands)
     assert all(command[0] == "git" for command in commands)
+
+
+def test_public_materialization_ref_move_falls_back_to_exact_commit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repository = Repository(
+        display_name="owner/repo",
+        commit_sha="a" * 40,
+        ref="main",
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=False,
+    )
+    commands: list[tuple[str, ...]] = []
+    exact_fetched = False
+
+    def fake_run(command, **kwargs):
+        nonlocal exact_fetched
+        normalized = tuple(command)
+        commands.append(normalized)
+        if "fetch" in normalized and normalized[-1] == repository.commit_sha:
+            exact_fetched = True
+        if "cat-file" in normalized and not exact_fetched:
+            return Completed(normalized, 1, "", "")
+        return Completed(normalized, 0, "", "")
+
+    monkeypatch.setattr(github, "run", fake_run)
+    monkeypatch.setattr(github, "_require", lambda command: None)
+
+    materialize(repository, tmp_path / "checkout")
+
+    fetches = [command for command in commands if "fetch" in command]
+    assert [command[-1] for command in fetches] == [
+        "main",
+        repository.commit_sha,
+    ]
+    assert all("--depth=1" in command for command in fetches)
+    assert commands[-1][-2:] == ("--detach", repository.commit_sha)
+
+
+def test_public_materialization_exact_sha_fetches_once(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    commit_sha = "a" * 40
+    repository = Repository(
+        display_name="owner/repo",
+        commit_sha=commit_sha,
+        ref=commit_sha,
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=None,
+    )
+    commands: list[tuple[str, ...]] = []
+
+    def fake_run(command, **kwargs):
+        normalized = tuple(command)
+        commands.append(normalized)
+        return Completed(normalized, 0, "", "")
+
+    monkeypatch.setattr(github, "run", fake_run)
+    monkeypatch.setattr(github, "_require", lambda command: None)
+
+    materialize(repository, tmp_path / "checkout")
+
+    fetches = [command for command in commands if "fetch" in command]
+    assert len(fetches) == 1
+    assert fetches[0][-2:] == ("origin", commit_sha)
+
+
+def test_public_materialization_fails_when_resolved_commit_disappears(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repository = Repository(
+        display_name="owner/repo",
+        commit_sha="a" * 40,
+        ref="main",
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=False,
+    )
+
+    def fake_run(command, **kwargs):
+        normalized = tuple(command)
+        if "cat-file" in normalized:
+            return Completed(normalized, 1, "", "")
+        return Completed(normalized, 0, "", "")
+
+    monkeypatch.setattr(github, "run", fake_run)
+    monkeypatch.setattr(github, "_require", lambda command: None)
+
+    with pytest.raises(github.RepositoryError, match="no longer available"):
+        materialize(repository, tmp_path / "checkout")
 
 
 def test_private_github_materialization_fails_before_git(

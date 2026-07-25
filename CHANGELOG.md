@@ -6,6 +6,15 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.4.0
+
+- Materialize public GitHub targets with a credential-free, depth-one fetch of
+  only the resolved ref or exact commit instead of cloning default-branch
+  history. If a ref moves after resolution, fetch the previously resolved
+  commit directly and fail closed when it is no longer available.
+- Add end-to-end `elapsed_seconds` to CLI and Python probe outcomes so operators
+  can distinguish acquisition and runner overhead from per-step preparation
+  and test timings.
 - Make PyPI publication opt-in through the `PYPI_TRUSTED_PUBLISHING`
   repository variable while keeping verified GitHub releases independent.
 

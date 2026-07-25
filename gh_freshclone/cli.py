@@ -23,24 +23,6 @@ if TYPE_CHECKING:
     from .model import BaselinePlan, Receipt
 
 
-class _CliOutcome:
-    __slots__ = ("cached", "receipt", "receipt_path")
-
-    def __init__(self, receipt: Any, receipt_path: Any, cached: bool) -> None:
-        self.receipt = receipt
-        self.receipt_path = receipt_path
-        self.cached = cached
-
-    def to_dict(self) -> dict[str, Any]:
-        payload = _receipt_dict(self.receipt)
-        return {
-            "api_version": API_VERSION,
-            **payload,
-            "receipt_path": str(self.receipt_path),
-            "cached": self.cached,
-        }
-
-
 def create_plan(*args: Any, **kwargs: Any) -> BaselinePlan:
     from .workflow import create_plan as implementation
 
@@ -48,10 +30,9 @@ def create_plan(*args: Any, **kwargs: Any) -> BaselinePlan:
 
 
 def probe_repository(*args: Any, **kwargs: Any):
-    from .workflow import check_repository
+    from .api import probe_repository as implementation
 
-    receipt, path, cached = check_repository(*args, **kwargs)
-    return _CliOutcome(receipt, path, cached)
+    return implementation(*args, **kwargs)
 
 
 def cache_status():
@@ -227,7 +208,12 @@ def _receipt_dict(value: Receipt | dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else value.to_dict()
 
 
-def _print_receipt(value: Receipt | dict[str, Any], path: str, cached: bool) -> None:
+def _print_receipt(
+    value: Receipt | dict[str, Any],
+    path: str,
+    cached: bool,
+    elapsed_seconds: float,
+) -> None:
     payload = _receipt_dict(value)
     plan = payload["plan"]
     repository = plan["repository"]
@@ -257,6 +243,7 @@ def _print_receipt(value: Receipt | dict[str, Any], path: str, cached: bool) -> 
             suggestion = diagnostic.get("suggested_package")
             suffix = f" (suggested package: {suggestion})" if suggestion else ""
             print(f"    {diagnostic['message']}{suffix}")
+    print(f"Elapsed:    {elapsed_seconds:.1f}s")
     print(f"Receipt:    {path}")
 
 
@@ -414,7 +401,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 )
             else:
-                _print_receipt(receipt, str(path), cached)
+                _print_receipt(
+                    receipt,
+                    str(path),
+                    cached,
+                    outcome.elapsed_seconds,
+                )
             return 0 if payload.get("status") == "pass" else 1
         except (RepositoryError, RunnerError, ValueError, WorkflowError) as exc:
             _print_initialization_error(exc, json_output=args.json)

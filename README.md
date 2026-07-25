@@ -175,6 +175,9 @@ initialization failures as a JSON error envelope on standard output:
 
 - GitHub targets are resolved to a full commit SHA using an isolated,
   credential-free `git ls-remote` request; exact SHA inputs skip this request.
+- Public targets materialize with a depth-one fetch of only that resolved ref
+  or commit. A ref move falls back to the already-resolved SHA and fails closed
+  if the immutable target is no longer available.
 - Mutable image tags are refreshed from their registry and resolved to
   `repository@sha256:...`; a stale local tag is never silently trusted. The
   digest is used for execution and stored in the receipt. An explicitly
@@ -424,7 +427,12 @@ from gh_freshclone.model import Repository
 
 outcome = probe_repository("pallets/itsdangerous", profile="quick", echo=False)
 assert outcome.api_version == 1
-print(outcome.status, outcome.receipt_path, outcome.cached)
+print(
+    outcome.status,
+    outcome.receipt_path,
+    outcome.cached,
+    outcome.elapsed_seconds,
+)
 tsumugi_flags = outcome_to_tsumugi_flags(outcome)
 
 # A host system can retain its own clone and sandbox lifecycle.
@@ -449,8 +457,8 @@ commands, commit, diagnostics, image identities, and cache evidence to
 Tsumugi's existing `test_cmd` / `baseline_*` flag contract; it does not bypass
 Tsumugi's quality gate or external-action controls.
 
-`check --json` adds `api_version`, `receipt_path`, and `cached` to the receipt
-shape. Receipt v6 is documented by the bundled
+`check --json` adds `api_version`, `receipt_path`, `cached`, and end-to-end
+`elapsed_seconds` to the receipt shape. Receipt v6 is documented by the bundled
 `gh_freshclone/schemas/receipt-v6.schema.json`. It records canonical CPU and
 memory limits, each step's working directory, and whether dependency
 preparation was reused; resource limits also scope cache reuse. The Tsumugi
@@ -475,9 +483,11 @@ dedicated self-hosted workflow.
 
 ## Release process
 
-The tag-triggered `release.yml` workflow is dormant until this repository and
-the `gh-freshclone` PyPI project are public and a `pypi` GitHub environment is
-connected as a PyPI Trusted Publisher. It requires no long-lived publishing
+The tag-triggered `release.yml` workflow builds and smoke-tests the wheel and
+sdist, records SHA-256 checksums and GitHub artifact attestations, and publishes
+an independent GitHub release. PyPI publication runs only when the repository
+variable `PYPI_TRUSTED_PUBLISHING` is exactly `true` and the `pypi` environment
+is connected as a Trusted Publisher; it requires no long-lived publishing
 token. A `vX.Y.Z` tag must exactly match the project version.
 
 Before publishing, the workflow reruns tests, lint, the native Docker E2E, and

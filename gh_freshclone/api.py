@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
@@ -17,6 +18,7 @@ class ProbeOutcome:
     receipt: Receipt | dict[str, Any]
     receipt_path: Path
     cached: bool
+    elapsed_seconds: float = 0
     api_version: int = API_VERSION
 
     @property
@@ -37,6 +39,7 @@ class ProbeOutcome:
             **payload,
             "receipt_path": str(self.receipt_path),
             "cached": self.cached,
+            "elapsed_seconds": self.elapsed_seconds,
         }
 
 
@@ -87,6 +90,7 @@ def probe_repository(
 
     from .workflow import check_repository
 
+    started = time.perf_counter()
     receipt, path, cached = check_repository(
         target,
         ref=ref,
@@ -97,7 +101,12 @@ def probe_repository(
         echo=echo,
         profile=profile,
     )
-    return ProbeOutcome(receipt=receipt, receipt_path=path, cached=cached)
+    return ProbeOutcome(
+        receipt=receipt,
+        receipt_path=path,
+        cached=cached,
+        elapsed_seconds=round(time.perf_counter() - started, 3),
+    )
 
 
 def receipt_schema() -> dict[str, Any]:

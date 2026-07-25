@@ -137,3 +137,25 @@ prepared state cannot be mistaken for current proofs.
   larger build; it remains covered by unit and container-runner tests.
 - Elysia's separate `test/cloudflare` manifest remains an explicit warning.
   The root quick baseline does not claim to prove that environment.
+
+## Exact-target materialization follow-up
+
+The first KAGARI integration run exposed that an exact SHA still entered
+`git clone`, which retained default-branch history even though planning only
+needs the selected committed tree. The materializer now initializes an empty
+repository and fetches only the resolved ref or SHA at depth one.
+
+Two exact public targets were measured immediately before and after the change
+on the same Windows host. Elapsed time is an observed development value rather
+than a cross-network guarantee; retained commit count and `.git` bytes directly
+show the reduced materialization scope.
+
+| Repository | Before | After | `.git` reduction |
+|---|---:|---:|---:|
+| `pallets/itsdangerous@672971d66a2e` | 1.773 s, 677 commits, 664,670 bytes | 1.123 s, 1 commit, 105,116 bytes | 84.2% |
+| `denoland/fresh@86d6cdeb331a` | 2.557 s, 1,778 commits, 5,477,319 bytes | 1.847 s, 1 commit, 1,897,463 bytes | 65.4% |
+
+Credential isolation, blob filtering, detached checkout of the previously
+resolved commit, and fail-closed behavior remain unchanged. Probe JSON now
+records end-to-end `elapsed_seconds`, allowing future KAGARI evidence to
+separate acquisition overhead from receipt step timings.
