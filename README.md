@@ -320,6 +320,9 @@ probe on a dedicated self-hosted runner labelled
 `gh-freshclone-apple-container`. GitHub-hosted macOS runners cannot provide
 this proof because [nested virtualization is not
 supported](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#limitations).
+A physical Apple silicon run and cold/warm public-repository measurements are
+recorded in
+[`docs/field-trial-2026-07-25.md`](docs/field-trial-2026-07-25.md#physical-apple-container-validation).
 
 ## Security model
 

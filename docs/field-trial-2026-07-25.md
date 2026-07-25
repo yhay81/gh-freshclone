@@ -45,6 +45,39 @@ asset at runtime. Automatic detection does not silently grant network access
 to untrusted tests; a reviewed `.gh-freshclone.toml` can opt in when that is
 the desired baseline.
 
+## Physical Apple-container validation
+
+A native run was completed on an Apple silicon Mac with macOS 26.5.1,
+Apple `container` 1.1.0 (commit `5973b9c`), 4 CPUs, and an 8 GiB container
+limit. The container system was started from a stopped state, and `doctor`
+reported the Apple runner as supported and ready.
+
+The dedicated native E2E suite passed both probes in 125.63 seconds, including
+the first image pulls:
+
+- a committed Python fixture passed through distinct network-enabled
+  preparation and network-disabled test containers;
+- a committed nested pnpm fixture passed, then passed again with the same
+  prepared volume and `prepare_cache_hit=true`;
+- both probes recorded `test_network=none`, and their app-owned test volumes
+  were removed after the run.
+
+The public Node trial was then repeated against the same immutable
+`sindresorhus/yocto-queue` commit used above,
+`b07eac099753833b29d06c614149904445739776`:
+
+| Observation | Wall time | Runner time | Preparation |
+|---|---:|---:|---:|
+| Apple-container cold PASS, 7 tests | 25.04 s | 20.460 s | 17.382 s, cache miss |
+| Apple-container warm PASS, tests rerun | 7.25 s | 4.096 s | 0.998 s, cache hit |
+| Immutable PASS receipt reuse | 0.50 s | no container | no preparation |
+
+The cold and warm executions both used the digest-pinned Node image, separate
+phase containers, and a network-disabled test phase. This closes the
+physical-Mac validation gap; the earlier Windows and native Apple-container
+measurements are development observations rather than cross-platform
+performance guarantees.
+
 ## Defects found and corrected
 
 1. A Go minimum version was incorrectly treated as the preferred runtime and
@@ -102,8 +135,5 @@ prepared state cannot be mistaken for current proofs.
 
 - Rust was planned but not compiled in this trial because it is a substantially
   larger build; it remains covered by unit and container-runner tests.
-- macOS command generation and Apple-container CI exist, but this report does
-  not claim a physical Mac result. A real Apple silicon run remains required
-  before calling macOS field-proven.
 - Elysia's separate `test/cloudflare` manifest remains an explicit warning.
   The root quick baseline does not claim to prove that environment.
