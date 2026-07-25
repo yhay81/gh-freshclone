@@ -4,6 +4,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
 
+from gh_freshclone import api, workflow
 from gh_freshclone.api import API_VERSION, ProbeOutcome, receipt_schema
 from gh_freshclone.model import (
     EXECUTION_POLICY_VERSION,
@@ -22,12 +23,36 @@ def test_probe_outcome_is_versioned_and_keeps_receipt_shape() -> None:
         receipt={"status": "pass", "plan": {"repository": {}}},
         receipt_path=Path("receipt.json"),
         cached=True,
+        elapsed_seconds=0.125,
     )
 
     assert outcome.passed is True
     assert outcome.to_dict()["api_version"] == API_VERSION
     assert outcome.to_dict()["receipt_path"] == "receipt.json"
     assert outcome.to_dict()["cached"] is True
+    assert outcome.to_dict()["elapsed_seconds"] == 0.125
+
+
+def test_probe_repository_records_end_to_end_elapsed_time(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    samples = iter((10.0, 11.2349))
+    monkeypatch.setattr(api.time, "perf_counter", lambda: next(samples))
+    monkeypatch.setattr(
+        workflow,
+        "check_repository",
+        lambda *args, **kwargs: (
+            {"status": "pass", "plan": {"repository": {}}},
+            tmp_path / "receipt.json",
+            False,
+        ),
+    )
+
+    outcome = api.probe_repository("owner/repo", echo=False)
+
+    assert outcome.elapsed_seconds == 1.235
+    assert outcome.cached is False
 
 
 def test_bundled_receipt_schema_matches_current_version() -> None:

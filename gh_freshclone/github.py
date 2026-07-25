@@ -316,6 +316,92 @@ def resolve_repository(target: str, ref: str | None = None) -> Repository:
     )
 
 
+def _commit_exists(
+    destination: Path,
+    commit_sha: str,
+    environment: dict[str, str],
+) -> bool:
+    present = run(
+        ["git", "-C", str(destination), "cat-file", "-e", commit_sha],
+        check=False,
+        env=environment,
+    )
+    return present.returncode == 0
+
+
+def _fetch_shallow(
+    destination: Path,
+    target: str,
+    environment: dict[str, str],
+) -> None:
+    run(
+        [
+            "git",
+            "-C",
+            str(destination),
+            "fetch",
+            "--quiet",
+            "--depth=1",
+            "--filter=blob:none",
+            "--no-tags",
+            "--",
+            "origin",
+            target,
+        ],
+        env=environment,
+    )
+
+
+def _materialize_remote(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+) -> None:
+    if not repository.github_repository:
+        raise RepositoryError("repository has no public GitHub source")
+    run(
+        [
+            "git",
+            "init",
+            "--quiet",
+            "--template=",
+            "--",
+            str(destination),
+        ],
+        env=environment,
+    )
+    run(
+        [
+            "git",
+            "-C",
+            str(destination),
+            "remote",
+            "add",
+            "origin",
+            f"https://github.com/{repository.github_repository}.git",
+        ],
+        env=environment,
+    )
+    fetch_target = repository.ref or repository.commit_sha
+    _fetch_shallow(destination, fetch_target, environment)
+    commit_exists = _commit_exists(
+        destination,
+        repository.commit_sha,
+        environment,
+    )
+    if not commit_exists and fetch_target != repository.commit_sha:
+        _fetch_shallow(destination, repository.commit_sha, environment)
+        commit_exists = _commit_exists(
+            destination,
+            repository.commit_sha,
+            environment,
+        )
+    if not commit_exists:
+        raise RepositoryError(
+            f"resolved commit is no longer available: {repository.display_name}"
+        )
+
+
 def materialize(repository: Repository, destination: Path) -> None:
     """Create a credential-free checkout pinned to ``repository.commit_sha``."""
 
@@ -330,54 +416,32 @@ def materialize(repository: Repository, destination: Path) -> None:
     if not repository.local_path and not repository.github_repository:
         raise RepositoryError("repository has no materializable source")
 
-    if repository.local_path:
-        command = [
-            "git",
-            "clone",
-            "--quiet",
-            "--no-hardlinks",
-            "--no-checkout",
-            "--template=",
-            "--",
-            repository.local_path,
-            str(destination),
-        ]
-    else:
-        command = [
-            "git",
-            "clone",
-            "--quiet",
-            "--filter=blob:none",
-            "--no-tags",
-            "--no-checkout",
-            "--template=",
-            "--",
-            f"https://github.com/{repository.github_repository}.git",
-            str(destination),
-        ]
-
     try:
         with _isolated_git_environment(destination.parent) as environment:
-            run(command, env=environment)
-            present = run(
-                ["git", "-C", str(destination), "cat-file", "-e", repository.commit_sha],
-                check=False,
-                env=environment,
-            )
-            if present.returncode != 0 and repository.github_repository:
+            if repository.local_path:
                 run(
                     [
                         "git",
-                        "-C",
-                        str(destination),
-                        "fetch",
+                        "clone",
                         "--quiet",
-                        "--depth=1",
+                        "--no-hardlinks",
+                        "--no-checkout",
+                        "--template=",
                         "--",
-                        "origin",
-                        repository.ref,
+                        repository.local_path,
+                        str(destination),
                     ],
                     env=environment,
+                )
+            else:
+                _materialize_remote(repository, destination, environment)
+            if repository.local_path and not _commit_exists(
+                destination,
+                repository.commit_sha,
+                environment,
+            ):
+                raise RepositoryError(
+                    f"resolved commit is no longer available: {repository.display_name}"
                 )
             run(
                 [
