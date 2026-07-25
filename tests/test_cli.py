@@ -244,6 +244,117 @@ def test_json_check_initialization_error_remains_machine_readable(
     }
 
 
+def test_github_status_json_forwards_exact_ref(
+    monkeypatch,
+    capsys,
+) -> None:
+    observed: list[tuple[str, str | None]] = []
+    payload = {
+        "github_status_version": 1,
+        "github_api_version": "2026-03-10",
+        "repository": {
+            "full_name": "owner/repo",
+            "default_branch": "main",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "visibility": "public",
+        },
+        "commit_sha": "a" * 40,
+        "ref": "a" * 40,
+        "state": "success",
+        "checks": {
+            "state": "success",
+            "total_count": 1,
+            "returned_count": 1,
+            "truncated": False,
+            "counts": {"success": 1},
+            "runs": [],
+        },
+        "legacy_status": {
+            "state": "success",
+            "total_count": 0,
+            "returned_count": 0,
+            "truncated": False,
+            "contexts": [],
+        },
+        "rate_limit": {"remaining": 57, "limit": 60},
+    }
+
+    def status(target: str, ref: str | None):
+        observed.append((target, ref))
+        return payload
+
+    monkeypatch.setattr(cli, "github_status", status)
+
+    assert (
+        cli.main(
+            [
+                "github-status",
+                "owner/repo",
+                "--ref",
+                "a" * 40,
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    assert observed == [("owner/repo", "a" * 40)]
+    assert json.loads(capsys.readouterr().out) == payload
+
+
+def test_github_status_text_surfaces_only_non_successful_checks(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "github_status",
+        lambda *args: {
+            "repository": {
+                "full_name": "owner/repo",
+                "archived": True,
+                "disabled": False,
+                "fork": False,
+            },
+            "commit_sha": "a" * 40,
+            "state": "failure",
+            "checks": {
+                "state": "failure",
+                "total_count": 2,
+                "counts": {"failure": 1, "success": 1},
+                "runs": [
+                    {
+                        "name": "test",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                    {
+                        "name": "lint",
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                ],
+            },
+            "legacy_status": {"state": "success", "total_count": 1},
+            "rate_limit": {
+                "remaining": 57,
+                "limit": 60,
+                "reset_at": "2026-01-01T00:00:00+00:00",
+            },
+        },
+    )
+
+    assert cli.main(["github-status", "owner/repo"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Repository flags: archived" in output
+    assert "lint: failure" in output
+    assert "test: success" not in output
+    assert "57/60 remaining" in output
+
+
 def test_cache_prune_exposes_evidence_limits(
     monkeypatch,
     capsys,

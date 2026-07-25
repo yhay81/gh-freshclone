@@ -6,6 +6,18 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.7.0
+
+- Add `github-status`, an explicit read-only GitHub REST API integration that
+  resolves an exact public commit and reports its GitHub Checks, legacy commit
+  statuses, repository identity, and visible API quota without executing
+  repository code or changing baseline cache identity.
+- Normalize an empty legacy status collection to `none` instead of GitHub's
+  API-level `pending`, retain the original API state, and refuse to claim
+  complete success when more than 100 latest check runs are present.
+- Document the production/development integration, public-data boundary, and
+  support contact needed for the GitHub Developer Program.
+
 ## 0.6.1
 
 - Enforce the prepared-volume byte and count limits immediately after a
