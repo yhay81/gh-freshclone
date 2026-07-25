@@ -39,12 +39,12 @@ def test_native_runner_executes_prepare_then_offline_test(
             str(git_repository),
             runner=E2E_RUNNER,
             use_cache=False,
-            echo=False,
+            echo=True,
         )
 
         assert isinstance(receipt, Receipt)
         assert cached is False
-        assert receipt.status == "pass"
+        assert receipt.status == "pass", receipt.to_dict()
         assert receipt.runner == E2E_RUNNER
         assert receipt.resource_limits.to_dict() == {
             "cpus": 4.0,
@@ -170,7 +170,7 @@ dependency_files = ["package.json", "pnpm-lock.yaml"]
             str(repository),
             runner=E2E_RUNNER,
             use_cache=False,
-            echo=False,
+            echo=True,
         )
 
         assert isinstance(receipt, Receipt)
@@ -188,7 +188,7 @@ dependency_files = ["package.json", "pnpm-lock.yaml"]
             str(repository),
             runner=E2E_RUNNER,
             use_cache=False,
-            echo=False,
+            echo=True,
         )
 
         assert isinstance(repeated, Receipt)
