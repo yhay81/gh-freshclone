@@ -22,7 +22,7 @@ def main() -> int:
     schema = receipt_schema()
     if schema["properties"]["receipt_version"]["const"] != 6:
         raise SystemExit("receipt v6 schema is missing from the distribution")
-    if EXECUTION_POLICY_VERSION != 15:
+    if EXECUTION_POLICY_VERSION != 16:
         raise SystemExit("unexpected execution policy version")
     if ResourceLimits(cpus=4, memory="8G").to_dict() != {
         "cpus": 4.0,
