@@ -295,3 +295,29 @@ Credential isolation, blob filtering, detached checkout of the previously
 resolved commit, and fail-closed behavior remain unchanged. Probe JSON now
 records end-to-end `elapsed_seconds`, allowing future KAGARI evidence to
 separate acquisition overhead from receipt step timings.
+
+## GitHub status integration — 2026-07-26
+
+The Developer Program completion audit found that the baseline compiler used
+GitHub's smart HTTP protocol but did not yet integrate with the GitHub API.
+The missing API surface also represented a product gap: a clean local PASS and
+the upstream CI state for the same exact commit had to be inspected with
+different tools.
+
+Version 0.7.0 adds an explicit, read-only `github-status` command. A physical
+unauthenticated REST call against
+`yhay81/gh-freshclone@d3b5e35b689b82036e8c0d849c488e6f9e794740`
+returned 21 completed GitHub Checks, all successful, in about two seconds.
+The legacy combined-status endpoint returned `pending` with zero contexts, a
+GitHub API convention that initially made the combined observation falsely
+pending. The implementation now preserves that raw API state while treating
+the empty evidence set as `none`; the exact commit correctly reports overall
+`success`.
+
+The final command uses two requests rather than a separate repository metadata
+request: the combined-status response already contains canonical repository
+identity. It exposes the remaining public API quota, does not retry rate-limit
+responses, bounds each response to 5 MiB and 15 seconds, and marks more than
+100 latest check runs as partial rather than claiming complete success. The
+mutable CI context is not part of deterministic plan, receipt, or PASS-cache
+identity.

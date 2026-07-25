@@ -56,7 +56,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.6.1"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.7.0"
 gh-freshclone doctor
 ```
 
@@ -91,6 +91,15 @@ gh-freshclone plan pallets/itsdangerous
 gh-freshclone plan owner/repo --ref v1.2.3 --profile reproduce
 gh-freshclone plan https://github.com/owner/repo/pull/123
 gh-freshclone plan . --json
+```
+
+Read the upstream GitHub CI state for the same exact commit without executing
+repository code:
+
+```shell
+gh-freshclone github-status owner/repo
+gh-freshclone github-status owner/repo --ref FULL_40_CHAR_SHA
+gh-freshclone github-status https://github.com/owner/repo/pull/123 --json
 ```
 
 Execute the default quick baseline:
@@ -130,6 +139,20 @@ When automation already knows a full 40-character commit SHA, pass it with
 request; materialization still verifies that the object exists before
 execution. A pasted pull-request URL resolves its advertised head ref without
 requiring GitHub API authentication.
+
+`github-status` is the explicit GitHub REST API integration. It uses API
+version `2026-03-10` to read the latest GitHub Checks and combined legacy
+commit status for the resolved public commit. The command makes two
+unauthenticated, read-only API requests, exposes the remaining API quota, does
+not retry a rate-limit response, and never executes repository code. GitHub's
+unauthenticated public-data limit is currently 60 requests per hour per source
+IP. The mutable upstream CI observation is intentionally separate from plan,
+receipt, and PASS-cache identity.
+
+The ordinary `plan` and `check` paths continue to use credential-free Git
+smart HTTP and do not require a GitHub API quota or token. See
+[the GitHub integration note](docs/github-developer-program.md) for API
+boundaries and Developer Program evidence.
 
 ## What a result means
 
@@ -559,6 +582,8 @@ or full logs from private projects. Follow the
 [security policy](https://github.com/yhay81/gh-freshclone/blob/main/SECURITY.md)
 for vulnerability reports. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
 development gates and non-negotiable execution boundaries.
+The support contact is
+[yusuke8h@gmail.com](mailto:yusuke8h@gmail.com).
 
 ## License
 

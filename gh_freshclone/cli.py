@@ -49,6 +49,12 @@ def prune_cache(**kwargs: Any):
     return implementation(**kwargs)
 
 
+def github_status(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from .github_status import github_status as implementation
+
+    return implementation(*args, **kwargs)
+
+
 def available_runners():
     from .runner_policy import available_runners as implementation
 
@@ -142,6 +148,24 @@ def _parser() -> argparse.ArgumentParser:
         "--quiet",
         action="store_true",
         help="do not stream container output; it is still written to logs",
+    )
+
+    status = subparsers.add_parser(
+        "github-status",
+        help="read GitHub Checks and commit statuses for the exact commit",
+    )
+    status.add_argument(
+        "target",
+        help="public OWNER/REPO or GitHub repository/commit/pull URL",
+    )
+    status.add_argument(
+        "--ref",
+        help="branch, tag, or commit (default: default branch)",
+    )
+    status.add_argument(
+        "--json",
+        action="store_true",
+        help="print machine-readable JSON",
     )
 
     cache = subparsers.add_parser("cache", help="inspect or prune app-owned caches")
@@ -388,10 +412,70 @@ def _print_cache_report(payload: dict[str, Any]) -> None:
         print(f"Warning: {warning}")
 
 
+def _print_github_status(payload: dict[str, Any]) -> None:
+    repository = payload["repository"]
+    checks = payload["checks"]
+    legacy = payload["legacy_status"]
+    print(f"Repository: {repository['full_name']}")
+    print(f"Commit:     {payload['commit_sha']}")
+    print(f"GitHub:     {payload['state']}")
+    properties = []
+    if repository.get("archived"):
+        properties.append("archived")
+    if repository.get("disabled"):
+        properties.append("disabled")
+    if repository.get("fork"):
+        properties.append("fork")
+    if properties:
+        print(f"Repository flags: {', '.join(properties)}")
+    counts = ", ".join(
+        f"{value} {name}" for name, value in checks["counts"].items()
+    )
+    detail = f" ({counts})" if counts else ""
+    print(
+        f"Checks:     {checks['state']}; "
+        f"{checks['total_count']} total{detail}"
+    )
+    for run in checks["runs"]:
+        if (
+            run["status"] == "completed"
+            and run["conclusion"] in _SUCCESSFUL_CHECK_CONCLUSIONS
+        ):
+            continue
+        result = run["conclusion"] or run["status"]
+        print(f"  {run['name']}: {result}")
+    print(
+        f"Statuses:   {legacy['state']}; "
+        f"{legacy['total_count']} contexts"
+    )
+    rate = payload.get("rate_limit")
+    if isinstance(rate, dict) and "remaining" in rate:
+        reset = f", resets {rate['reset_at']}" if rate.get("reset_at") else ""
+        limit = f"/{rate['limit']}" if rate.get("limit") is not None else ""
+        print(f"API quota:  {rate['remaining']}{limit} remaining{reset}")
+
+
+_SUCCESSFUL_CHECK_CONCLUSIONS = {"neutral", "skipped", "success"}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "doctor":
         return _doctor(json_output=args.json)
+    if args.command == "github-status":
+        from .github import RepositoryError
+        from .github_status import GitHubStatusError
+
+        try:
+            payload = github_status(args.target, args.ref)
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=True, indent=2))
+            else:
+                _print_github_status(payload)
+            return 0
+        except (GitHubStatusError, RepositoryError, ValueError) as exc:
+            _print_initialization_error(exc, json_output=args.json)
+            return 2
     if args.command == "cache":
         try:
             if args.cache_command == "status":
