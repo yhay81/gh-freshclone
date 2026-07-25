@@ -255,13 +255,33 @@ def _print_receipt(
 
 def _doctor(*, json_output: bool = False) -> int:
     import platform
+    from concurrent.futures import ThreadPoolExecutor
 
     git_path = _which("git")
     runners = available_runners()
+    supported_runners = {
+        name: version
+        for name, version in runners.items()
+        if bool(version) and runner_supported(name, version)
+    }
+    readiness: dict[str, bool] = {}
+    if supported_runners:
+        with ThreadPoolExecutor(
+            max_workers=len(supported_runners),
+            thread_name_prefix="ghfc-doctor-ready",
+        ) as executor:
+            futures = {
+                name: executor.submit(runner_ready, name)
+                for name in supported_runners
+            }
+            readiness = {
+                name: future.result()
+                for name, future in futures.items()
+            }
     runner_reports: dict[str, dict[str, str | bool | None]] = {}
     for name, version in runners.items():
         supported = bool(version) and runner_supported(name, version)
-        ready = supported and runner_ready(name)
+        ready = supported and readiness.get(name, False)
         report: dict[str, str | bool | None] = {
             "version": version or None,
             "supported": supported,

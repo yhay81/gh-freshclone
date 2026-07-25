@@ -25,6 +25,7 @@ from .constants import (
     DEFAULT_MAX_VOLUME_BYTES,
     DEFAULT_MAX_VOLUMES,
     DEFAULT_MIN_FREE_BYTES,
+    RUNNER_CONTROL_TIMEOUT_SECONDS,
 )
 from .model import EXECUTION_POLICY_VERSION, RECEIPT_VERSION
 from .process import run
@@ -39,7 +40,6 @@ _HUMAN_SIZE = re.compile(
 )
 _LAST_USED = ".gh-freshclone-last-used"
 _CACHE_STATE_LOCK_KEY = "gh-freshclone-cache-state-v1"
-_RUNNER_METADATA_TIMEOUT_SECONDS = 15
 
 
 class CacheSpaceError(RuntimeError):
@@ -247,7 +247,7 @@ def _discover_managed_volumes() -> list[dict[str, Any]]:
                 "{{.Name}}",
             ],
             check=False,
-            timeout=_RUNNER_METADATA_TIMEOUT_SECONDS,
+            timeout=RUNNER_CONTROL_TIMEOUT_SECONDS,
         )
         if listed.returncode != 0:
             continue
@@ -314,7 +314,7 @@ def _runner_volume_sizes(runner: str) -> dict[str, int] | None:
     completed = run(
         command,
         check=False,
-        timeout=_RUNNER_METADATA_TIMEOUT_SECONDS,
+        timeout=RUNNER_CONTROL_TIMEOUT_SECONDS,
     )
     if completed.returncode != 0:
         return None
@@ -689,7 +689,7 @@ def _remove_volume(runner: str, name: str) -> bool:
     completed = run(
         command,
         check=False,
-        timeout=_RUNNER_METADATA_TIMEOUT_SECONDS,
+        timeout=RUNNER_CONTROL_TIMEOUT_SECONDS,
     )
     if completed.returncode == 0:
         return True
@@ -702,6 +702,21 @@ def _remove_volume(runner: str, name: str) -> bool:
             "does not exist",
         )
     )
+
+
+def discard_dependency_cache(path: Path) -> tuple[bool, str | None]:
+    """Discard one already-locked app cache after failed preparation."""
+
+    return _remove_host_entry(path)
+
+
+def discard_prepared_volume(runner: str, name: str) -> tuple[bool, str | None]:
+    """Discard one already-locked prepared volume and its ledger entry."""
+
+    if not _remove_volume(runner, name):
+        return False, "runner rejected removal"
+    _forget_prepared_volume(runner, name)
+    return True, None
 
 
 def cache_status() -> CacheReport:

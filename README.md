@@ -201,6 +201,14 @@ initialization failures as a JSON error envelope on standard output:
   exact-commit, step-scoped volumes. A success marker allows a fresh proof to
   skip redundant dependency preparation without treating an interrupted
   preparation as reusable.
+- A failed preparation discards only its
+  repo/commit/lockfile/image-scoped host cache or prepared volumes before the
+  app performs one clean retry in the same check. This prevents
+  storage-corrupted partial package-manager state from becoming a persistent
+  false repository failure without creating an unbounded retry loop. A second
+  preparation failure leaves the scoped cache clean and returns normally.
+  Test-phase failures retain successfully prepared dependencies for fast
+  deterministic reruns.
 - Deno's `DENO_DIR`, local vendor tree, and `node_modules` share the same
   exact-commit volume across the networked preparation and offline test
   containers, including repositories with `"vendor": true`.
@@ -282,10 +290,15 @@ prepared volumes with a 3 GiB measured-volume budget, and 30 days. A cache hit
 refreshes its receipt's LRU time. Docker and Podman volume usage comes from
 runner metadata without mounting or executing cached content; Apple
 `container` retains the count and age limits when byte accounting is
-unavailable. Metadata calls are bounded, so a stopped runner cannot turn
-`cache status` into an unbounded wait. Non-zero runs explicitly retry named
-container cleanup, and Docker/Podman execution containers carry app ownership
-labels for diagnosis.
+unavailable. Runner readiness, version, image/volume metadata, volume creation,
+failure diagnostics, cache metadata, and cleanup calls are limited to 15
+seconds, so a stopped runner cannot turn startup, `doctor`, `cache status`, or
+failure handling into an unbounded wait. Independent version/readiness probes
+run concurrently while preserving runner preference order, so the worst-case
+wait does not multiply by the number of installed runners. Image downloads and
+repository prepare/test phases keep their normal completion semantics.
+Non-zero runs explicitly retry named container cleanup, and Docker/Podman
+execution containers carry app ownership labels for diagnosis.
 
 Before a cache-miss execution, the app preserves 2 GiB free on the filesystems
 holding its cache and temporary checkout. It first removes only reclaimable

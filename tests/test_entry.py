@@ -10,5 +10,5 @@ def test_version_fast_path_does_not_import_cli(capsys, monkeypatch) -> None:
 
     assert entry.main(["--version"]) == 0
 
-    assert capsys.readouterr().out.strip() == "0.5.0"
+    assert capsys.readouterr().out.strip() == "0.5.1"
     assert "gh_freshclone.cli" not in sys.modules

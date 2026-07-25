@@ -6,6 +6,19 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.5.1
+
+- Bound runner readiness, version, image/volume metadata, prepared-volume
+  creation, failure diagnostics, and cleanup control-plane calls to 15 seconds.
+  Probe independent installed runners concurrently while preserving preference
+  order. Image downloads and repository prepare/test phases remain unbounded
+  by this control deadline.
+- Discard only the repo/commit/lockfile/image-scoped dependency cache after a
+  failed preparation phase, preventing interrupted or storage-corrupted package
+  state from poisoning every retry. Perform one clean preparation retry in the
+  same check, leave the scoped cache clean after a repeated preparation
+  failure, and preserve prepared dependencies after ordinary test failures.
+
 ## 0.5.0
 
 - Measure app-owned Docker and Podman prepared-volume usage and enforce a
