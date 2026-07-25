@@ -4,6 +4,17 @@ All notable changes to `gh-freshclone` are documented here. The project uses
 semantic versioning while its public receipt, execution-policy, plan, and
 adapter versions evolve independently.
 
+## 0.3.1
+
+- Copy committed repository contents into the isolated workspace without
+  attempting to preserve the bind mount root's host ownership. This fixes
+  Docker execution on native Linux while retaining symlinks and executable
+  permission bits.
+- Keep native container E2E output visible so runner-policy regressions remain
+  diagnosable in CI.
+- Bump the execution policy to v15 so evidence produced with the incompatible
+  workspace-copy behavior is never reused.
+
 ## 0.3.0
 
 - Resolve public GitHub repositories, branches, tags, commit URLs, and pull

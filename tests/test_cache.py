@@ -389,7 +389,7 @@ def test_prune_waits_for_in_use_prepared_volume(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
-    name = "ghfc-12345678-123456789abc-quick-python-cache-p6-e14"
+    name = "ghfc-12345678-123456789abc-quick-python-cache-p6-e15"
     state = {"present": True}
     started = threading.Event()
     finished = threading.Event()

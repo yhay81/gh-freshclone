@@ -307,7 +307,7 @@ def test_prepared_volume_is_scoped_to_public_policy_versions() -> None:
     name = prepared_volume_name(plan.repository, plan.steps[0], plan.profile)
 
     assert name.startswith("ghfc-")
-    assert "-p6-e14" in name
+    assert "-p6-e15" in name
 
 
 def test_prepared_volume_is_scoped_to_step_working_directory() -> None:
