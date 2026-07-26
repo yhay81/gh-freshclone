@@ -703,6 +703,61 @@ def test_cmake_preparation_cache_requires_success_marker() -> None:
     assert markers == ("/prepared/.gh-freshclone-prepared-v1",)
 
 
+@pytest.mark.parametrize("runner", ["docker", "container"])
+def test_dotnet_restore_state_uses_scoped_prepared_volume(
+    tmp_path: Path,
+    runner: str,
+) -> None:
+    step = CheckStep(
+        "dotnet",
+        "mcr.microsoft.com/dotnet/sdk:10.0",
+        "dotnet test Product.sln --no-restore",
+        ("Product.sln",),
+        prepare_command="dotnet restore Product.sln",
+        test_network="none",
+    )
+    cache = tmp_path / "host-cache"
+
+    command = build_runner_command(
+        runner,
+        step,
+        tmp_path,
+        cpus=2,
+        memory="4g",
+        cache_dir=cache,
+        prepared_volume="ghfc-dotnet-cache",
+        network_enabled=False,
+    )
+    rendered = " ".join(command)
+
+    assert "ghfc-dotnet-cache" in rendered
+    assert "/prepared" in rendered
+    assert str(cache.resolve()) not in rendered
+    assert "NUGET_PACKAGES=/prepared/nuget" in rendered
+    assert "DOTNET_CLI_HOME=/prepared/home" in rendered
+    assert "DOTNET_CLI_TELEMETRY_OPTOUT=1" in rendered
+    if runner == "container":
+        assert command[command.index("--network") + 1] == "none"
+    else:
+        assert "--network=none" in command
+
+
+def test_dotnet_preparation_cache_requires_success_marker() -> None:
+    markers = runners._prepare_marker_paths(
+        CheckStep(
+            "dotnet",
+            "mcr.microsoft.com/dotnet/sdk:10.0",
+            "dotnet test Product.sln --no-restore",
+            prepare_command="dotnet restore Product.sln",
+        ),
+        effective_cache=None,
+        effective_volume="ghfc-dotnet-cache",
+        support_volume=None,
+    )
+
+    assert markers == ("/prepared/.gh-freshclone-prepared-v1",)
+
+
 def test_cmake_preparation_uses_image_scoped_managed_volume(
     monkeypatch,
     tmp_path: Path,

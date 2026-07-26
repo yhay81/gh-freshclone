@@ -6,6 +6,24 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.12.0
+
+- Add a conservative automatic .NET baseline for repositories with exactly
+  one root `.sln` or `.slnx`. Planning parses solution and project XML
+  statically, maps supported `global.json` SDK 8/9/10 declarations to official
+  multi-architecture Microsoft SDK images, and never evaluates MSBuild.
+- Make `quick` choose one ordinary unit-test project while excluding
+  benchmark, integration, performance, sample, and utility projects. When the
+  chosen project declares a literal framework matching its SDK, execute only
+  that TFM rather than every target.
+- Persist NuGet packages and restore-generated `obj` inputs in an
+  exact-commit, image-scoped managed volume. A separate network-disabled
+  container copies only those inputs into a fresh workspace, recompiles, and
+  reruns tests without reusing `bin` output.
+- Cover Docker and Apple `container` construction plus native amd64 and arm64
+  restore/offline-test boundaries. A real AutoMapper proof passed 1,217 tests;
+  a repeat reused dependency preparation but reran compilation and tests.
+
 ## 0.11.0
 
 - Add a conservative automatic CMake/C++ baseline. Planning statically

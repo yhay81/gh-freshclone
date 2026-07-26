@@ -562,3 +562,42 @@ network-disabled container configured, built, and passed all 21 CTest cases in
 test network opt-in or repository credential was supplied. Repeating the
 ordinary exact-commit check reused the PASS receipt and returned in 0.42
 seconds.
+
+## .NET solution baseline follow-up — 2026-07-26
+
+A manifest-only cohort measured four current public repositories with one
+root solution. Planning parsed committed `.sln`/`.slnx`, project paths, and
+`global.json` without evaluating MSBuild:
+
+| Repository | Selected quick project | SDK image |
+|---|---|---|
+| `App-vNext/Polly` | `test/Polly.Core.Tests/Polly.Core.Tests.csproj` | `10.0.302` |
+| `AutoMapper/AutoMapper` | `src/UnitTests/AutoMapper.UnitTests.csproj` | `10.0` |
+| `serilog/serilog` | `test/Serilog.Tests/Serilog.Tests.csproj` | `10.0` |
+| `FluentValidation/FluentValidation` | `src/FluentValidation.Tests/FluentValidation.Tests.csproj` | `10.0` |
+
+The detector excluded benchmark, integration, performance, sample, testing
+utility, and test-app projects. When a selected project contained a literal
+TFM matching the SDK, quick mode selected only that framework. Preparation
+restored NuGet packages with network access and saved only restore-generated
+`obj` state in an exact-commit managed volume. The separate test container
+copied those inputs into a fresh workspace, stayed offline, and generated new
+`bin` output.
+
+The native fixture restored xUnit packages, passed one test offline, then
+performed an intentionally fresh proof. The second proof reported a verified
+preparation-cache hit but compiled and ran the test again.
+
+The physical public proof used
+`AutoMapper/AutoMapper@dfa6dd587c5854b4beee5934beb39ba6e9569b84`.
+Fresh preparation took 44.578 seconds. The offline `net10.0` phase compiled
+AutoMapper and passed 1,217 of 1,217 tests; total runner time was 72.666
+seconds. An immediate `--no-cache` repeat reused only verified restore state,
+then recompiled and reran all 1,217 tests in 28.063 seconds.
+
+`serilog/serilog@07d39cfb2928076ecd902a61d295f90d74fe1fa5`
+provided negative evidence rather than a false environment success. Its
+network-enabled restore deterministically failed because repository policy
+treats `NU1903` as an error and a pinned cryptography package matched five
+current high-severity advisories. The app retried once from a clean volume,
+observed the same failure, and discarded the failed preparation state.

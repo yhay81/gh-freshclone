@@ -13,8 +13,8 @@ JSON receipt. It distinguishes repository test failures from runner failures
 and missing environment capabilities.
 
 Automatic detection covers root-level Python, Node.js/Bun/Deno, Rust, Go,
-Maven, Gradle, and CMake projects. A repository-owned configuration compiles
-explicit monorepo steps. The package is alpha software.
+Maven, Gradle, CMake, and .NET projects. A repository-owned configuration
+compiles explicit monorepo steps. The package is alpha software.
 
 ## Why it exists
 
@@ -56,7 +56,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.11.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.12.0"
 gh-freshclone doctor
 ```
 
@@ -242,6 +242,14 @@ initialization failures as a JSON error envelope on standard output:
   `FETCHCONTENT_FULLY_DISCONNECTED=ON` and no container network; compiled
   outputs are not reused. `ctest --no-tests=error` prevents a zero-test build
   from becoming a false PASS.
+- .NET planning parses one committed root solution without evaluating MSBuild.
+  A declared supported SDK 8/9/10 selects Microsoft's official multi-arch SDK
+  image; `quick` chooses one ordinary unit-test project and, when a literal
+  matching TFM exists, only that framework. NuGet restore state and generated
+  `obj` inputs cross the phase boundary in an exact-commit managed volume.
+  The network-disabled test container copies only those restore outputs into a
+  fresh workspace, recompiles the source, and never reuses `bin` or test
+  results.
 - Canonical CPU and memory limits are recorded in receipt v6 and participate
   in receipt and PASS-index identity; a proof produced at `2 CPU / 4g` is
   never reused for an `8g` request.
@@ -309,6 +317,16 @@ with root test evidence. A physical proof of
 21 CTest cases with the test container offline. The first end-to-end check took
 175.09 seconds, including 9.97 seconds of fresh preparation and 156.65 seconds
 of build/test runner time. Reusing that exact PASS returned in 0.42 seconds.
+
+The .NET follow-up accepted all four single-solution repositories in its
+manifest-only cohort: Polly, AutoMapper, Serilog, and FluentValidation.
+`AutoMapper/AutoMapper@dfa6dd587c5854b4beee5934beb39ba6e9569b84`
+restored in 44.578 seconds, then compiled and passed 1,217 unit tests in an
+offline container; total runner time was 72.666 seconds. An intentionally
+fresh repeat reused only verified restore state, recompiled and reran all
+tests, and completed in 28.063 seconds. Serilog produced useful negative
+evidence instead: its exact commit failed restore because its own
+warning-as-error policy rejected five current high-severity NuGet advisories.
 
 A fresh probe of public pull request
 [`pallets/itsdangerous#428`](https://github.com/pallets/itsdangerous/pull/428)
@@ -487,6 +505,9 @@ Current evidence sources include:
   compatibility and literal Java 17/21/25 toolchain declarations select a
   multi-architecture official Gradle image, while unwrapped builds are never
   auto-run
+- .NET: one root `.sln` or `.slnx`, optional `global.json`, and statically
+  listed project paths; `quick` selects one ordinary unit-test project while
+  rejecting benchmark, integration, performance, sample, and utility projects
 
 Cargo members declared by a root workspace are covered by its
 `cargo test --workspace` step. Other nested manifests are reported as not
@@ -593,9 +614,9 @@ uv run python -m benchmarks.cli_startup
 ```
 
 CI runs unit and local-checkout integration tests on Windows, macOS, and Linux.
-It also runs a real Docker prepare/offline-test E2E and the cached-path
-performance contract. Native Apple `container` E2E is available through the
-dedicated self-hosted workflow.
+It also runs real Docker prepare/offline-test E2E, native arm64 CMake and .NET
+boundary jobs, and the cached-path performance contract. Native Apple
+`container` E2E is available through the dedicated self-hosted workflow.
 
 ## Release process
 
@@ -613,8 +634,9 @@ SHA-256 checksums, and transfers only that three-file release set to a separate
 publish job. The source-running build job has read-only repository access and
 no OIDC token; only the `pypi` environment job can attest, create a draft
 GitHub release, and publish through PyPI Trusted Publishing. It rechecks the
-transferred checksums and exposes the GitHub release only after PyPI succeeds.
-Release artifacts can then be checked with:
+transferred checksums and exposes the GitHub release only after the optional
+PyPI step succeeds or is explicitly disabled. Release artifacts can then be
+checked with:
 
 ```shell
 gh attestation verify gh_freshclone-X.Y.Z-py3-none-any.whl \

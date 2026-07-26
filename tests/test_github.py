@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from gh_freshclone import github
+from gh_freshclone.detect import detect_plan
 from gh_freshclone.github import (
     complete_materialization,
     materialize,
@@ -184,6 +185,49 @@ def test_plan_materialization_keeps_nested_manifest_evidence(
     ) == '{"private": true}\n'
     complete_materialization(repository, checkout)
     assert (checkout / "tests" / "test_sample.py").is_file()
+
+
+def test_plan_materialization_keeps_dotnet_solution_and_project_manifests(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    (git_repository / "Product.sln").write_text(
+        'Project("{FAKE}") = "Tests", "test\\Product.Tests.csproj", "{A}"\n',
+        encoding="utf-8",
+    )
+    project = git_repository / "test" / "Product.Tests.csproj"
+    project.parent.mkdir(exist_ok=True)
+    project.write_text("<Project />\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "dotnet solution",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    repository = resolve_repository(str(git_repository))
+    checkout = tmp_path / "checkout"
+
+    materialize_plan_inputs(repository, checkout)
+
+    assert (checkout / "Product.sln").is_file()
+    assert (checkout / "test" / "Product.Tests.csproj").is_file()
+    plan = detect_plan(repository, checkout)
+    assert any(step.ecosystem == "dotnet" for step in plan.steps)
 
 
 def test_plan_materialization_keeps_declared_node_entrypoints(

@@ -443,6 +443,134 @@ int main() {
         _cleanup_test_volumes()
 
 
+def test_dotnet_restore_crosses_the_offline_phase_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "dotnet-repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repository)],
+        check=True,
+        capture_output=True,
+    )
+    (repository / "global.json").write_text(
+        '{"sdk":{"version":"8.0.420","allowPrerelease":false}}\n',
+        encoding="utf-8",
+    )
+    (repository / "Freshclone.sln").write_text(
+        """
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Freshclone.Tests", "test\\Freshclone.Tests.csproj", "{11111111-1111-1111-1111-111111111111}"
+EndProject
+Global
+EndGlobal
+""".lstrip(),
+        encoding="utf-8",
+    )
+    tests = repository / "test"
+    tests.mkdir()
+    (tests / "Freshclone.Tests.csproj").write_text(
+        """
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+</Project>
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (tests / "OfflineBoundaryTests.cs").write_text(
+        """
+using Xunit;
+
+public class OfflineBoundaryTests
+{
+    [Fact]
+    public void RestoredPackagesRemainAvailableWithoutNetwork()
+    {
+        Assert.Equal(4, 2 + 2);
+    }
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path / "dotnet-e2e-cache"))
+    try:
+        receipt, _, _ = check_repository(
+            str(repository),
+            runner=E2E_RUNNER,
+            use_cache=False,
+            echo=True,
+        )
+
+        assert isinstance(receipt, Receipt)
+        assert receipt.status == "pass", receipt.to_dict()
+        assert receipt.plan.steps[0].ecosystem == "dotnet"
+        assert receipt.results[0].test_network == "none"
+        assert receipt.results[0].failed_phase is None
+        assert receipt.results[0].prepare_cache_hit is False
+        assert receipt.results[0].prepared_volume
+        log = Path(receipt.results[0].log_path).read_text(encoding="utf-8")
+        assert "prepare (network enabled) phase" in log
+        assert "test (network none) phase" in log
+        assert "Passed!" in log
+
+        repeated, _, repeated_cached = check_repository(
+            str(repository),
+            runner=E2E_RUNNER,
+            use_cache=False,
+            echo=True,
+        )
+
+        assert isinstance(repeated, Receipt)
+        assert repeated.status == "pass", repeated.to_dict()
+        assert repeated_cached is False
+        assert repeated.results[0].prepare_cache_hit is True
+        repeated_log = Path(repeated.results[0].log_path).read_text(
+            encoding="utf-8"
+        )
+        assert "Passed!" in repeated_log
+    finally:
+        _cleanup_test_volumes()
+
+
 def test_test_network_requires_operator_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
