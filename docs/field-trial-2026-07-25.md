@@ -668,3 +668,39 @@ verified a preparation-cache hit, replayed install hooks, reran the same
 offline PHPUnit suite, and completed in 16.661 seconds. The resolved image
 identity was
 `composer@sha256:7725eb4545c438629ae8bde3ef0bb9a5038ef566126ad878442a69007242d267`.
+
+## Ruby/Bundler baseline follow-up — 2026-07-26
+
+The Ruby baseline requires `Gemfile` plus a Bundler 4 `Gemfile.lock` containing
+the generic `ruby` platform, one exact `BUNDLED WITH` version, and SHA-256
+entries for Bundler and every RubyGems archive. It accepts only the official
+`https://rubygems.org/` source and repository-contained `PATH` sources. `GIT`
+and plugin sources, custom gem servers, missing checksums, architecture-only
+locks, and transitive test runners fail closed.
+
+Planning reads the lock as data and constructs exact
+`rubygems.org/downloads/<name>-<version>.gem` requests from a restricted token
+alphabet. The networked phase downloads at most eight archives concurrently
+and verifies every lock-provided digest. It does not invoke Bundler and cannot
+evaluate `Gemfile`, gemspecs, Rakefiles, native extensions, or other repository
+code. The separate test container mounts the archive volume read-only, has no
+network, installs the locked Bundler into `/tmp`, performs a frozen local
+bundle install in its disposable workspace, and then runs the directly
+declared ordinary test suite.
+
+The manifest-only controls included current commits of Faker and Rails, both
+of which had suitable Bundler 4 locks and generic platforms. Rack, Rake,
+RSpec Core, Redis, Sinatra, Puma, and Liquid had no committed root lock and
+were rejected rather than resolved from mutable dependency metadata.
+
+The physical public proof used
+`faker-ruby/faker@cca4184947e09fdd02afb8b89d25a9c8ebc7274e`. Its 47 exact gem
+archives prepared in 2.063 seconds in the official multi-architecture
+`ruby:3.4.10-bookworm` image. The network-disabled phase performed the local
+bundle install and passed 2,179 tests with 263,046 assertions; total runner
+time was 73.412 seconds. An immediate `--no-cache` repeat reported a verified
+preparation-cache hit, reconstructed the bundle in a fresh workspace, and
+reran all 2,179 tests with 254,867 assertions in 74.714 seconds. Assertion
+counts vary with Faker's randomized data, while both runs had zero failures
+and 100% pass rates. The resolved image identity was
+`ruby@sha256:b19a2bd6377adf9723ddd9f6473b84987ffaacd53ffb3b88831b7d065a6f9a8b`.

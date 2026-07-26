@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -278,6 +279,58 @@ def test_plan_materialization_keeps_composer_lock_and_phpunit_configuration(
     assert (checkout / "phpunit.xml.dist").is_file()
     plan = detect_plan(repository, checkout)
     assert any(step.ecosystem == "php" for step in plan.steps)
+
+
+def test_plan_materialization_keeps_bounded_ruby_rake_evidence(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "ruby-bundler"
+    shutil.copy2(fixture / "Gemfile", git_repository / "Gemfile")
+    shutil.copy2(fixture / "Gemfile.lock", git_repository / "Gemfile.lock")
+    (git_repository / "Rakefile").write_text(
+        'Dir["tasks/**/*.rake"].sort.each { |task| load task }\n',
+        encoding="utf-8",
+    )
+    task = git_repository / "tasks" / "test.rake"
+    task.parent.mkdir()
+    task.write_text(
+        'require "rake/testtask"\nRake::TestTask.new(:test)\n',
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "ruby baseline",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    repository = resolve_repository(str(git_repository))
+    checkout = tmp_path / "checkout"
+
+    materialize_plan_inputs(repository, checkout)
+
+    assert (checkout / "Gemfile").is_file()
+    assert (checkout / "Gemfile.lock").is_file()
+    assert (checkout / "Rakefile").is_file()
+    assert (checkout / "tasks" / "test.rake").is_file()
+    plan = detect_plan(repository, checkout)
+    ruby = next(step for step in plan.steps if step.ecosystem == "ruby")
+    assert "tasks/test.rake" in ruby.evidence
 
 
 def test_plan_materialization_keeps_declared_node_entrypoints(

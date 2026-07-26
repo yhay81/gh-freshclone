@@ -488,6 +488,7 @@ def _tree_paths(
         AUTOMATIC_PLAN_INPUT_FILES,
         AUTOMATIC_PLAN_INPUT_SUFFIXES,
         NESTED_MANIFEST_NAMES,
+        RUBY_RAKE_TASK_PREFIXES,
     )
 
     output = run(
@@ -508,6 +509,10 @@ def _tree_paths(
         if not value:
             continue
         path = PurePosixPath(value)
+        ruby_task = path.suffix.casefold() == ".rake" and (
+            len(path.parts) == 1
+            or any(value.startswith(prefix) for prefix in RUBY_RAKE_TASK_PREFIXES)
+        )
         if (
             value in AUTOMATIC_PLAN_INPUT_FILES
             or (
@@ -516,7 +521,7 @@ def _tree_paths(
             )
         ) or (
             len(path.parts) == 3 and path.name in NESTED_MANIFEST_NAMES
-        ):
+        ) or ruby_task:
             selected.append(value)
     return tuple(selected)
 
@@ -743,6 +748,7 @@ def _materialize_automatic_plan_inputs(
         AUTOMATIC_PLAN_INPUT_FILES,
         AUTOMATIC_PLAN_INPUT_SUFFIXES,
         NESTED_MANIFEST_NAMES,
+        RUBY_RAKE_TASK_PREFIXES,
     )
 
     tree_paths = _tree_paths(repository, destination, environment)
@@ -774,6 +780,44 @@ def _materialize_automatic_plan_inputs(
         destination,
         environment,
         root_files,
+    )
+    ruby_tasks: list[str] = []
+    if "Gemfile.lock" in tree_paths and "Rakefile" in tree_paths:
+        seen_ruby_tasks: set[str] = set()
+        for value in tree_paths:
+            path = _portable_checkout_path(value)
+            if (
+                path is None
+                or path.suffix.casefold() != ".rake"
+                or not (
+                    len(path.parts) == 1
+                    or any(
+                        value.startswith(prefix)
+                        for prefix in RUBY_RAKE_TASK_PREFIXES
+                    )
+                )
+            ):
+                continue
+            collision_key = (
+                path.as_posix().casefold() if os.name == "nt" else path.as_posix()
+            )
+            if collision_key in seen_ruby_tasks:
+                continue
+            seen_ruby_tasks.add(collision_key)
+            ruby_tasks.append(path.as_posix())
+            if len(ruby_tasks) == 128:
+                break
+    _checkout_paths(
+        repository,
+        destination,
+        environment,
+        tuple(ruby_tasks),
+    )
+    _checkout_symlink_targets(
+        repository,
+        destination,
+        environment,
+        tuple(ruby_tasks),
     )
     entrypoints = _node_entrypoint_paths(
         repository,
@@ -810,7 +854,7 @@ def _materialize_automatic_plan_inputs(
         dotnet_projects,
     )
 
-    for directory in ("tests", "test"):
+    for directory in ("tests", "test", "spec"):
         if (
             _tree_object_type(
                 repository,

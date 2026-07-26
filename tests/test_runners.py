@@ -878,6 +878,69 @@ def test_php_preparation_cache_requires_success_marker() -> None:
     assert markers == ("/prepared/.gh-freshclone-prepared-v1",)
 
 
+@pytest.mark.parametrize("runner", ["docker", "container"])
+def test_ruby_gems_cross_readonly_prepared_volume(
+    tmp_path: Path,
+    runner: str,
+) -> None:
+    step = CheckStep(
+        "ruby",
+        "docker.io/library/ruby:3.4.10-bookworm",
+        "bundle _4.0.15_ exec rake test",
+        ("Gemfile.lock",),
+        prepare_command="download checksummed gems",
+        test_network="none",
+    )
+
+    test_command = build_runner_command(
+        runner,
+        step,
+        tmp_path,
+        cpus=2,
+        memory="4g",
+        prepared_volume="ghfc-ruby-cache",
+        network_enabled=False,
+        prepared_read_only=True,
+    )
+    rendered = " ".join(test_command)
+
+    assert "ghfc-ruby-cache" in rendered
+    assert "target=/prepared,readonly" in rendered
+    assert "cp /prepared/gems/*.gem /workspace/vendor/cache/" in test_command[-1]
+    if runner == "container":
+        assert test_command[test_command.index("--network") + 1] == "none"
+    else:
+        assert "--network=none" in test_command
+
+    prepare_command = build_runner_command(
+        runner,
+        step,
+        tmp_path,
+        cpus=2,
+        memory="4g",
+        prepared_volume="ghfc-ruby-cache",
+        network_enabled=True,
+    )
+    assert "target=/prepared,readonly" not in " ".join(prepare_command)
+    assert "cp /prepared/gems/*.gem" not in prepare_command[-1]
+
+
+def test_ruby_preparation_cache_requires_success_marker() -> None:
+    markers = runners._prepare_marker_paths(
+        CheckStep(
+            "ruby",
+            "docker.io/library/ruby:3.4.10-bookworm",
+            "bundle exec rake test",
+            prepare_command="download checksummed gems",
+        ),
+        effective_cache=None,
+        effective_volume="ghfc-ruby-cache",
+        support_volume=None,
+    )
+
+    assert markers == ("/prepared/.gh-freshclone-prepared-v1",)
+
+
 def test_readonly_prepared_mount_requires_a_managed_volume(tmp_path: Path) -> None:
     with pytest.raises(
         runners.RunnerError,

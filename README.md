@@ -13,8 +13,9 @@ JSON receipt. It distinguishes repository test failures from runner failures
 and missing environment capabilities.
 
 Automatic detection covers root-level Python, Node.js/Bun/Deno, Rust, Go,
-Maven, Gradle, Composer/PHPUnit, CMake, and .NET projects. A repository-owned
-configuration compiles explicit monorepo steps. The package is alpha software.
+Maven, Gradle, Ruby/Bundler, Composer/PHPUnit, CMake, and .NET projects. A
+repository-owned configuration compiles explicit monorepo steps. The package
+is alpha software.
 
 ## Why it exists
 
@@ -56,7 +57,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.14.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.15.0"
 gh-freshclone doctor
 ```
 
@@ -237,6 +238,16 @@ initialization failures as a JSON error envelope on standard output:
   lifecycle is rerun from a fresh read-only checkout with Maven offline mode
   or Gradle `--offline` in a network-disabled container. Managed volumes avoid
   host UID/permission coupling without granting broader container privileges.
+- Ruby/Bundler planning accepts only a generic-platform Bundler 4 lock with
+  complete SHA-256 identities, an exact Bundler version, the official
+  RubyGems source, repository-contained path gems, and a direct locked
+  ordinary test runner. Preparation constructs fixed RubyGems archive URLs
+  from safe lock tokens, downloads them in bounded parallel transfers, and
+  verifies every checksum without evaluating `Gemfile`, gemspecs, Rakefiles,
+  native extensions, or repository code. The network-disabled test container
+  mounts those archives read-only, installs the exact Bundler into disposable
+  state, performs a frozen local bundle install, and reruns RSpec or the
+  Rake-backed Minitest/test-unit suite.
 - CMake planning requires a literal root CTest signal and refuses a declared
   minimum newer than its pinned CMake runtime. It conservatively enables one
   ordinary project test option when the committed `option(...)` name and
@@ -470,8 +481,8 @@ probe on a dedicated self-hosted runner labelled
 `gh-freshclone-apple-container`. GitHub-hosted macOS runners cannot provide
 this proof because [nested virtualization is not
 supported](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#limitations).
-The ordinary CI workflow additionally runs the CMake, .NET, and
-Composer/PHPUnit prepare/offline E2Es on native GitHub-hosted
+The ordinary CI workflow additionally runs the CMake, .NET,
+Composer/PHPUnit, and Ruby/Bundler prepare/offline E2Es on native GitHub-hosted
 `ubuntu-24.04-arm` runners. This continuously verifies the same arm64 OCI
 images and dependency paths used by Apple silicon, while the self-hosted
 workflow retains coverage of Apple `container` itself.
@@ -538,6 +549,11 @@ Current evidence sources include:
   compatibility and literal Java 17/21/25 toolchain declarations select a
   multi-architecture official Gradle image, while unwrapped builds are never
   auto-run
+- Ruby/Bundler: `Gemfile`, an exact Bundler 4 `Gemfile.lock` with complete
+  SHA-256 checksums and a generic `ruby` platform, and a direct locked RSpec
+  suite or Rake-backed Minitest/test-unit task; Git/plugin sources, custom gem
+  servers, escaping path gems, checksum gaps, and transitive runners are
+  reported rather than executed
 - Composer/PHPUnit: `composer.json`, an exact `composer.lock`, a direct locked
   `phpunit/phpunit` package, and an optional `phpunit.xml(.dist)`; custom
   vendor/bin layouts, locks missing the declared runner, transitive runners,
@@ -652,9 +668,10 @@ uv run python -m benchmarks.cli_startup
 ```
 
 CI runs unit and local-checkout integration tests on Windows, macOS, and Linux.
-It also runs real Docker prepare/offline-test E2E, native arm64 CMake and .NET
-boundary jobs, and the cached-path performance contract. Native Apple
-`container` E2E is available through the dedicated self-hosted workflow.
+It also runs real Docker prepare/offline-test E2E, native arm64 CMake, .NET,
+Composer/PHPUnit, and Ruby/Bundler boundary jobs, and the cached-path
+performance contract. Native Apple `container` E2E is available through the
+dedicated self-hosted workflow.
 
 ## Release process
 

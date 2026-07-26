@@ -143,6 +143,27 @@ jobs:
       - name: Exercise Composer prepare and offline PHPUnit on arm64
         run: uv run pytest -q tests/test_container_e2e.py -k composer
 
+  docker-arm64-ruby-e2e:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    env:
+      GH_FRESHCLONE_E2E_RUNNER: docker
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Verify native arm64 Docker boundary
+        run: |
+          test "$(uname -m)" = "aarch64"
+          docker info
+      - run: uv sync --locked
+      - name: Exercise checksummed RubyGems and offline Bundler on arm64
+        run: uv run pytest -q tests/test_container_e2e.py -k bundler
+
   performance-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 10

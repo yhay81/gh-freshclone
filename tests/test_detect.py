@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from gh_freshclone.detect import (
     BOOTSTRAP_NINJA_VERSION,
     CMAKE_IMAGE,
     COMPOSER_IMAGE,
+    RUBY_IMAGE,
     _dependency_fingerprint,
     detect_plan,
 )
@@ -927,6 +929,142 @@ def test_php_dependency_identity_includes_lock_and_phpunit_configuration(
     lock = tmp_path / "composer.lock"
     lock.write_text(lock.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     third = _dependency_fingerprint(tmp_path, "php", COMPOSER_IMAGE)
+
+    assert len({first, second, third}) == 3
+
+
+def _write_ruby_project(root: Path) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "ruby-bundler"
+    shutil.copytree(fixture, root, dirs_exist_ok=True)
+
+
+def test_detects_checksummed_ruby_bundle_without_networked_repository_code(
+    tmp_path: Path,
+) -> None:
+    _write_ruby_project(tmp_path)
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    assert len(plan.steps) == 1
+    step = plan.steps[0]
+    assert step.ecosystem == "ruby"
+    assert step.image == RUBY_IMAGE
+    assert step.test_network == "none"
+    assert "https://rubygems.org/downloads/$filename" in step.prepare_command
+    assert "minitest-5.25.5.gem" in step.prepare_command
+    assert "rake-13.2.1.gem" in step.prepare_command
+    assert "bundler-4.0.15.gem" in step.prepare_command
+    assert "--parallel-max 8" in step.prepare_command
+    assert "--config /tmp/gh-freshclone-ruby-curl" in step.prepare_command
+    assert "sha256sum --check --strict" in step.prepare_command
+    assert "bundle install" not in step.prepare_command
+    assert "Gemfile" not in step.prepare_command
+    assert "gem install --local" in step.command
+    assert "BUNDLE_FROZEN=true" in step.command
+    assert "bundle _4.0.15_ install --local" in step.command
+    assert "bundle _4.0.15_ exec rake test" in step.command
+    assert "Gemfile.lock:minitest@5.25.5" in step.evidence
+    assert "Rakefile" in step.evidence
+
+
+def test_ruby_lock_sources_and_checksums_fail_closed(tmp_path: Path) -> None:
+    _write_ruby_project(tmp_path)
+    lock = tmp_path / "Gemfile.lock"
+
+    custom_source = lock.read_text(encoding="utf-8").replace(
+        "https://rubygems.org/",
+        "https://gems.example.invalid/",
+    )
+    lock.write_text(custom_source, encoding="utf-8")
+    custom = detect_plan(_repository(), tmp_path)
+    assert custom.steps == ()
+    assert any("custom or ambiguous gem server" in item for item in custom.warnings)
+
+    _write_ruby_project(tmp_path)
+    missing_checksum = lock.read_text(encoding="utf-8").replace(
+        " sha256=391b6c6cb43a4802bfb7c93af1ebe2ac66a210293f4a3fb7db36f2fc7dc2c756",
+        "",
+    )
+    lock.write_text(missing_checksum, encoding="utf-8")
+    incomplete = detect_plan(_repository(), tmp_path)
+    assert incomplete.steps == ()
+    assert any("complete, exact SHA-256 map" in item for item in incomplete.warnings)
+
+    _write_ruby_project(tmp_path)
+    lock.write_text(
+        "GIT\n  remote: https://github.com/example/code.git\n\n"
+        + lock.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    mutable = detect_plan(_repository(), tmp_path)
+    assert mutable.steps == ()
+    assert any("GIT" in item and "mutable" in item for item in mutable.warnings)
+
+
+def test_ruby_requires_generic_platform_and_direct_locked_runner(
+    tmp_path: Path,
+) -> None:
+    _write_ruby_project(tmp_path)
+    lock = tmp_path / "Gemfile.lock"
+    lock.write_text(
+        lock.read_text(encoding="utf-8").replace("  ruby\n", "  x86_64-linux\n"),
+        encoding="utf-8",
+    )
+    architecture_specific = detect_plan(_repository(), tmp_path)
+    assert architecture_specific.steps == ()
+    assert any("generic ruby platform" in item for item in architecture_specific.warnings)
+
+    _write_ruby_project(tmp_path)
+    lock.write_text(
+        lock.read_text(encoding="utf-8").replace(
+            "  minitest (= 5.25.5)\n",
+            "",
+        ),
+        encoding="utf-8",
+    )
+    transitive = detect_plan(_repository(), tmp_path)
+    assert transitive.steps == ()
+    assert any("directly declare" in item for item in transitive.warnings)
+
+
+def test_ruby_repository_path_must_stay_inside_checkout(tmp_path: Path) -> None:
+    _write_ruby_project(tmp_path)
+    lock = tmp_path / "Gemfile.lock"
+    lock.write_text(
+        "PATH\n"
+        "  remote: ../outside\n"
+        "  specs:\n"
+        "    local-gem (1.0.0)\n\n"
+        + lock.read_text(encoding="utf-8").replace(
+            "  rake (13.2.1) sha256="
+            "46cb38dae65d7d74b6020a4ac9d48afed8eb8149c040eccf0523bec91907059d\n",
+            "  local-gem (1.0.0)\n"
+            "  rake (13.2.1) sha256="
+            "46cb38dae65d7d74b6020a4ac9d48afed8eb8149c040eccf0523bec91907059d\n",
+        ),
+        encoding="utf-8",
+    )
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    assert plan.steps == ()
+    assert any("PATH source outside" in item for item in plan.warnings)
+
+
+def test_ruby_dependency_identity_includes_lock_and_rake_evidence(
+    tmp_path: Path,
+) -> None:
+    _write_ruby_project(tmp_path)
+    first = _dependency_fingerprint(tmp_path, "ruby", RUBY_IMAGE)
+    rakefile = tmp_path / "Rakefile"
+    rakefile.write_text(
+        rakefile.read_text(encoding="utf-8") + "\n# changed\n",
+        encoding="utf-8",
+    )
+    second = _dependency_fingerprint(tmp_path, "ruby", RUBY_IMAGE)
+    lock = tmp_path / "Gemfile.lock"
+    lock.write_text(lock.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    third = _dependency_fingerprint(tmp_path, "ruby", RUBY_IMAGE)
 
     assert len({first, second, third}) == 3
 
