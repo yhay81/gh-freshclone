@@ -24,7 +24,20 @@ BOOTSTRAP_NINJA_VERSION = "1.13.0"
 MAVEN_IMAGE = "docker.io/library/maven:3.9-eclipse-temurin-21"
 CMAKE_IMAGE = "docker.io/library/python:3.13-bookworm"
 COMPOSER_IMAGE = "docker.io/library/composer:2.10.1"
+RUBY_IMAGE = "docker.io/library/ruby:3.4.10-bookworm"
 SUPPORTED_DOTNET_MAJORS = frozenset({8, 9, 10})
+RUBY_RAKE_TASK_PREFIXES = ("tasks/", "lib/tasks/")
+_RUBYGEMS_REMOTE = "https://rubygems.org/"
+_RUBY_LOCK_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}")
+_RUBY_LOCK_SPEC = re.compile(
+    r"    ([A-Za-z0-9][A-Za-z0-9_.-]{0,199}) "
+    r"\(([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\)"
+)
+_RUBY_LOCK_CHECKSUM = re.compile(
+    r"  ([A-Za-z0-9][A-Za-z0-9_.-]{0,199}) "
+    r"\(([A-Za-z0-9][A-Za-z0-9_.-]{0,199})\)"
+    r"(?: sha256=([0-9a-f]{64}))?"
+)
 _CMAKE_TEST_OPTION = re.compile(
     r"(?:^|_)(?:BUILD_?TESTS?|TESTS?)$",
     re.IGNORECASE,
@@ -108,6 +121,13 @@ _DEPENDENCY_FILES = {
         "phpunit.xml",
         "phpunit.xml.dist",
     ),
+    "ruby": (
+        "Gemfile",
+        "Gemfile.lock",
+        ".ruby-version",
+        "Rakefile",
+        ".rspec",
+    ),
 }
 _ROOT_INPUT_FILES = {
     CONFIG_NAME,
@@ -130,6 +150,7 @@ NESTED_MANIFEST_NAMES = frozenset(
         "build.gradle.kts",
         "CMakeLists.txt",
         "composer.json",
+        "Gemfile",
     }
 )
 _HASH_CHUNK_BYTES = 1024 * 1024
@@ -1145,6 +1166,375 @@ def _detect_gradle(
     )
 
 
+def _ruby_lock_sections(text: str) -> list[tuple[str, list[str]]] | None:
+    sections: list[tuple[str, list[str]]] = []
+    current: list[str] | None = None
+    for line in text.splitlines():
+        if line and not line[0].isspace():
+            if not re.fullmatch(r"[A-Z][A-Z ]*", line):
+                return None
+            current = []
+            sections.append((line, current))
+        elif current is not None:
+            current.append(line)
+        elif line:
+            return None
+    return sections
+
+
+def _ruby_source_specs(lines: list[str]) -> tuple[list[str], set[tuple[str, str]]]:
+    remotes: list[str] = []
+    specs: set[tuple[str, str]] = set()
+    in_specs = False
+    for line in lines:
+        if line == "  specs:":
+            in_specs = True
+            continue
+        if line.startswith("  remote: "):
+            remotes.append(line.removeprefix("  remote: "))
+            continue
+        if not in_specs:
+            continue
+        match = _RUBY_LOCK_SPEC.fullmatch(line)
+        if match:
+            specs.add((match.group(1), match.group(2)))
+    return remotes, specs
+
+
+def _ruby_path_is_contained(root: Path, value: str) -> bool:
+    if (
+        not value
+        or "\\" in value
+        or ":" in value
+        or "\0" in value
+        or any(ord(character) < 32 for character in value)
+    ):
+        return False
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts:
+        return False
+    candidate = root.joinpath(*path.parts)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError:
+        return False
+    return resolved.is_dir() and resolved.is_relative_to(root.resolve())
+
+
+def _ruby_task_signal(root: Path) -> str | None:
+    candidates = [root / "Rakefile"]
+    for prefix in RUBY_RAKE_TASK_PREFIXES:
+        directory = root.joinpath(*PurePosixPath(prefix).parts)
+        if directory.is_dir():
+            candidates.extend(sorted(directory.rglob("*.rake"))[:128])
+    for path in candidates[:129]:
+        if not path.is_file():
+            continue
+        try:
+            if path.stat().st_size > 256 * 1024:
+                continue
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if re.search(
+            r"\bRake::TestTask\b|"
+            r"(?m:^\s*task\s*(?:\(\s*)?(?::test\b|[\"']test[\"']))",
+            source,
+        ):
+            return path.relative_to(root).as_posix()
+    return None
+
+
+def _ruby_download_command(
+    downloads: list[tuple[str, str]],
+) -> str:
+    checksum_lines = [
+        shlex.quote(f"{checksum}  {filename}")
+        for filename, checksum in downloads
+    ]
+    return (
+        "rm -rf /prepared/gems && mkdir -p /prepared/gems && "
+        "cd /prepared/gems && "
+        f"printf '%s\\n' {' '.join(checksum_lines)} "
+        "> /tmp/gh-freshclone-ruby-sha256 && "
+        ": > /tmp/gh-freshclone-ruby-curl && "
+        "while read -r checksum filename extra; do "
+        'test -n "$checksum" && test -n "$filename" && test -z "$extra" && '
+        'case "$filename" in *[!A-Za-z0-9_.-]*|\'\') exit 2;; esac && '
+        "printf 'url = \"%s\"\\noutput = \"%s\"\\n' "
+        f'"{_RUBYGEMS_REMOTE}downloads/$filename" "$filename" '
+        ">> /tmp/gh-freshclone-ruby-curl; "
+        "done < /tmp/gh-freshclone-ruby-sha256 && "
+        "curl --fail --silent --show-error --location "
+        "--proto '=https' --proto-redir '=https' --tlsv1.2 "
+        "--retry 2 --retry-all-errors --connect-timeout 30 --max-time 300 "
+        "--parallel --parallel-max 8 "
+        "--config /tmp/gh-freshclone-ruby-curl && "
+        "sha256sum --check --strict /tmp/gh-freshclone-ruby-sha256"
+    )
+
+
+def _detect_ruby(root: Path, profile: str) -> tuple[CheckStep | None, list[str]]:
+    gemfile = root / "Gemfile"
+    lock_path = root / "Gemfile.lock"
+    if not gemfile.is_file():
+        return None, []
+    if not lock_path.is_file():
+        return None, [
+            (
+                "Gemfile was found without Gemfile.lock; automatic Ruby "
+                "execution requires an exact dependency lock."
+            )
+        ]
+    try:
+        lock_text = lock_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None, [
+            (
+                "Gemfile.lock is not readable UTF-8; use .gh-freshclone.toml "
+                "for an explicit Ruby baseline."
+            )
+        ]
+    sections = _ruby_lock_sections(lock_text)
+    if sections is None:
+        return None, [
+            (
+                "Gemfile.lock has unsupported syntax; automatic Ruby execution "
+                "accepts only a statically parseable Bundler lock."
+            )
+        ]
+    by_name: dict[str, list[list[str]]] = {}
+    for name, lines in sections:
+        by_name.setdefault(name, []).append(lines)
+    prohibited = sorted(name for name in ("GIT", "PLUGIN") if name in by_name)
+    if prohibited:
+        return None, [
+            (
+                "Gemfile.lock contains executable or mutable dependency sources "
+                f"({', '.join(prohibited)}); automatic networked preparation "
+                "accepts only checksummed RubyGems and repository-contained paths."
+            )
+        ]
+    required_singletons = ("DEPENDENCIES", "CHECKSUMS", "PLATFORMS", "BUNDLED WITH")
+    if any(len(by_name.get(name, [])) != 1 for name in required_singletons):
+        return None, [
+            (
+                "Gemfile.lock is missing a unique DEPENDENCIES, CHECKSUMS, "
+                "PLATFORMS, or BUNDLED WITH section."
+            )
+        ]
+
+    remote_specs: set[tuple[str, str]] = set()
+    for lines in by_name.get("GEM", []):
+        remotes, specs = _ruby_source_specs(lines)
+        if remotes != [_RUBYGEMS_REMOTE] or not specs:
+            return None, [
+                (
+                    "Gemfile.lock uses a custom or ambiguous gem server; "
+                    "automatic acquisition is restricted to https://rubygems.org/."
+                )
+            ]
+        remote_specs.update(specs)
+    if not remote_specs:
+        return None, [
+            (
+                "Gemfile.lock contains no checksummed RubyGems dependency graph; "
+                "use .gh-freshclone.toml for an explicit baseline."
+            )
+        ]
+
+    path_specs: set[tuple[str, str]] = set()
+    for lines in by_name.get("PATH", []):
+        remotes, specs = _ruby_source_specs(lines)
+        if (
+            len(remotes) != 1
+            or not _ruby_path_is_contained(root, remotes[0])
+            or not specs
+        ):
+            return None, [
+                (
+                    "Gemfile.lock has a PATH source outside the committed "
+                    "repository or without a statically identifiable spec."
+                )
+            ]
+        path_specs.update(specs)
+
+    platforms = {
+        line.removeprefix("  ")
+        for line in by_name["PLATFORMS"][0]
+        if line.startswith("  ") and _RUBY_LOCK_TOKEN.fullmatch(line[2:])
+    }
+    if "ruby" not in platforms:
+        return None, [
+            (
+                "Gemfile.lock has no generic ruby platform; automatic execution "
+                "requires a source-gem fallback for both amd64 and arm64."
+            )
+        ]
+
+    bundled_lines = [
+        line[2:]
+        for line in by_name["BUNDLED WITH"][0]
+        if line.startswith("  ") and line.strip()
+    ]
+    if len(bundled_lines) != 1 or not _RUBY_LOCK_TOKEN.fullmatch(bundled_lines[0]):
+        return None, [
+            (
+                "Gemfile.lock does not pin one safe BUNDLED WITH version; "
+                "refresh it with a current Bundler release."
+            )
+        ]
+    bundler_version = bundled_lines[0]
+    bundler_spec = ("bundler", bundler_version)
+
+    checksums: dict[tuple[str, str], str | None] = {}
+    for line in by_name["CHECKSUMS"][0]:
+        if not line:
+            continue
+        match = _RUBY_LOCK_CHECKSUM.fullmatch(line)
+        if match is None:
+            return None, [
+                (
+                    "Gemfile.lock has an unsupported CHECKSUMS entry; every "
+                    "RubyGems archive must have one SHA-256 identity."
+                )
+            ]
+        key = match.group(1), match.group(2)
+        if key in checksums:
+            return None, [
+                "Gemfile.lock contains duplicate CHECKSUMS identities."
+            ]
+        checksums[key] = match.group(3)
+
+    required_checksums = remote_specs | {bundler_spec}
+    if (
+        any(checksums.get(spec) is None for spec in required_checksums)
+        or any(
+            checksum is not None and spec not in required_checksums
+            for spec, checksum in checksums.items()
+        )
+        or any(
+            checksum is None and spec not in path_specs
+            for spec, checksum in checksums.items()
+        )
+        or not path_specs.issubset(checksums)
+    ):
+        return None, [
+            (
+                "Gemfile.lock does not provide a complete, exact SHA-256 map "
+                "for every RubyGems archive and Bundler itself."
+            )
+        ]
+
+    dependencies: set[str] = set()
+    for line in by_name["DEPENDENCIES"][0]:
+        match = re.fullmatch(
+            r"  ([A-Za-z0-9][A-Za-z0-9_.-]{0,199})(?:!|\s.*)?",
+            line,
+        )
+        if match:
+            dependencies.add(match.group(1))
+    locked_names = {name for name, _version in remote_specs | path_specs}
+    signal = _ruby_task_signal(root)
+    runner_name = ""
+    runner_command = ""
+    runner_evidence = ""
+    if (
+        signal
+        and "rake" in dependencies
+        and "rake" in locked_names
+        and dependencies.intersection({"minitest", "test-unit"})
+        and dependencies.intersection({"minitest", "test-unit"}).issubset(
+            locked_names
+        )
+    ):
+        runner_name = min(dependencies.intersection({"minitest", "test-unit"}))
+        runner_command = "rake test"
+        runner_evidence = signal
+    elif (
+        (root / "spec").is_dir()
+        and dependencies.intersection({"rspec", "rspec-core"})
+        and dependencies.intersection({"rspec", "rspec-core"}).issubset(locked_names)
+    ):
+        runner_name = min(dependencies.intersection({"rspec", "rspec-core"}))
+        runner_command = "rspec --format progress"
+        runner_evidence = "spec/"
+    else:
+        return None, [
+            (
+                "Bundler dependencies do not directly declare a locked ordinary "
+                "RSpec suite or a locked Rake-backed Minitest/test-unit task; "
+                "automatic execution will not guess a transitive test runner."
+            )
+        ]
+
+    locked_runner_versions = sorted(
+        version for name, version in remote_specs | path_specs if name == runner_name
+    )
+    if not locked_runner_versions:
+        return None, [
+            "Gemfile.lock does not contain the directly declared Ruby test runner."
+        ]
+    downloads = sorted(
+        (
+            (f"{name}-{version}.gem", checksums[(name, version)] or "")
+            for name, version in required_checksums
+        ),
+        key=lambda item: item[0],
+    )
+    manifest_size = sum(
+        len(filename.encode("utf-8")) + len(checksum) + 4
+        for filename, checksum in downloads
+    )
+    if (
+        len(downloads) > 256
+        or manifest_size > 24_000
+        or any(len(filename.encode("utf-8")) > 240 for filename, _ in downloads)
+    ):
+        return None, [
+            (
+                "The checksummed Ruby dependency graph is too large for the "
+                "bounded automatic acquisition manifest; use "
+                ".gh-freshclone.toml for an explicit baseline."
+            )
+        ]
+    bundler_filename = f"bundler-{bundler_version}.gem"
+    command = (
+        "rm -rf /tmp/gh-freshclone-gems && "
+        "mkdir -p /tmp/gh-freshclone-gems && "
+        "gem install --local --no-document --ignore-dependencies "
+        "--install-dir /tmp/gh-freshclone-gems "
+        f"/prepared/gems/{shlex.quote(bundler_filename)} && "
+        "export GEM_HOME=/tmp/gh-freshclone-gems "
+        "GEM_PATH=/tmp/gh-freshclone-gems "
+        "PATH=/tmp/gh-freshclone-gems/bin:$PATH "
+        "BUNDLE_FROZEN=true BUNDLE_DISABLE_VERSION_CHECK=true "
+        "BUNDLE_ALLOW_OFFLINE_INSTALL=true BUNDLE_PATH=vendor/bundle "
+        "BUNDLE_JOBS=2 && "
+        f"bundle _{bundler_version}_ install --local && "
+        f"bundle _{bundler_version}_ exec {runner_command}"
+    )
+    evidence = [
+        "Gemfile",
+        "Gemfile.lock",
+        f"Gemfile.lock:bundler@{bundler_version}",
+        f"Gemfile.lock:{runner_name}@{locked_runner_versions[0]}",
+        runner_evidence,
+        f"profile.{profile}",
+    ]
+    return (
+        _step(
+            root,
+            "ruby",
+            RUBY_IMAGE,
+            command,
+            evidence,
+            prepare_command=_ruby_download_command(downloads),
+        ),
+        [],
+    )
+
+
 def _detect_php(root: Path, profile: str) -> tuple[CheckStep | None, list[str]]:
     composer_path = root / "composer.json"
     lock_path = root / "composer.lock"
@@ -1704,6 +2094,7 @@ def detect_plan(
     go = _detect_go(root)
     maven = _detect_maven(root, profile)
     gradle, gradle_warnings = _detect_gradle(root, profile)
+    ruby, ruby_warnings = _detect_ruby(root, profile)
     php, php_warnings = _detect_php(root, profile)
     cmake, cmake_warnings = _detect_cmake(root, profile)
     dotnet, dotnet_warnings = _detect_dotnet(root, profile)
@@ -1718,13 +2109,25 @@ def detect_plan(
             f"Both Maven and Gradle baselines were found; profile {profile!r} "
             f"selects {selected_java}, while profile 'full' runs both."
         )
-    for step in (rust, node, python, go, maven, gradle, php, cmake, dotnet):
+    for step in (
+        rust,
+        node,
+        python,
+        go,
+        maven,
+        gradle,
+        ruby,
+        php,
+        cmake,
+        dotnet,
+    ):
         if step:
             steps.append(step)
     warnings.extend(rust_warnings)
     warnings.extend(node_warnings)
     warnings.extend(python_warnings)
     warnings.extend(gradle_warnings)
+    warnings.extend(ruby_warnings)
     warnings.extend(php_warnings)
     warnings.extend(cmake_warnings)
     warnings.extend(dotnet_warnings)
@@ -1733,7 +2136,7 @@ def detect_plan(
         warnings.append(
             "No supported root-level baseline was found. "
             "Automatic support covers Python, Node.js/Bun/Deno, Rust, Go, "
-            "Maven, Gradle, Composer/PHPUnit, CMake, and .NET; "
+            "Maven, Gradle, Ruby/Bundler, Composer/PHPUnit, CMake, and .NET; "
             "use .gh-freshclone.toml for an explicit layout."
         )
     nested = sorted(

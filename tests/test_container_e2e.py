@@ -657,6 +657,81 @@ def test_composer_install_crosses_the_offline_phpunit_boundary(
         _cleanup_test_volumes()
 
 
+def test_bundler_crosses_checksummed_acquisition_and_offline_rake_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "ruby-repository"
+    fixture = Path(__file__).parent / "fixtures" / "ruby-bundler"
+    shutil.copytree(fixture, repository)
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repository)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path / "ruby-e2e-cache"))
+    try:
+        receipt, _, _ = check_repository(
+            str(repository),
+            runner=E2E_RUNNER,
+            use_cache=False,
+            echo=True,
+        )
+
+        assert isinstance(receipt, Receipt)
+        assert receipt.status == "pass", receipt.to_dict()
+        assert receipt.plan.steps[0].ecosystem == "ruby"
+        assert receipt.results[0].test_network == "none"
+        assert receipt.results[0].failed_phase is None
+        assert receipt.results[0].prepare_cache_hit is False
+        assert receipt.results[0].prepared_volume
+        log = Path(receipt.results[0].log_path).read_text(encoding="utf-8")
+        assert "prepare (network enabled) phase" in log
+        assert "test (network none) phase" in log
+        assert "Ruby Bundler fixture passed offline" in log
+        assert "minitest-5.25.5.gem: OK" in log
+
+        repeated, _, repeated_cached = check_repository(
+            str(repository),
+            runner=E2E_RUNNER,
+            use_cache=False,
+            echo=True,
+        )
+
+        assert isinstance(repeated, Receipt)
+        assert repeated.status == "pass", repeated.to_dict()
+        assert repeated_cached is False
+        assert repeated.results[0].prepare_cache_hit is True
+        repeated_log = Path(repeated.results[0].log_path).read_text(
+            encoding="utf-8"
+        )
+        assert "verified preparation cache hit" in repeated_log
+        assert "Ruby Bundler fixture passed offline" in repeated_log
+    finally:
+        _cleanup_test_volumes()
+
+
 def test_test_network_requires_operator_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

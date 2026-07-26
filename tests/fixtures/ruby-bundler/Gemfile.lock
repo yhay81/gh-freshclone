@@ -1,0 +1,20 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    minitest (5.25.5)
+    rake (13.2.1)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  minitest (= 5.25.5)
+  rake (= 13.2.1)
+
+CHECKSUMS
+  bundler (4.0.15) sha256=a4ceb882fe94a0e0ac63cd0813932bbfd631a14e5ac0b7975189b19a4d28d9e7
+  minitest (5.25.5) sha256=391b6c6cb43a4802bfb7c93af1ebe2ac66a210293f4a3fb7db36f2fc7dc2c756
+  rake (13.2.1) sha256=46cb38dae65d7d74b6020a4ac9d48afed8eb8149c040eccf0523bec91907059d
+
+BUNDLED WITH
+  4.0.15

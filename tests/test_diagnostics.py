@@ -155,6 +155,41 @@ def test_missing_locked_php_extension_is_an_environment_gap() -> None:
     assert diagnostics[0].subject == "ext-imagick"
 
 
+def test_incompatible_locked_ruby_runtime_is_an_environment_gap() -> None:
+    detail = (
+        "Your Ruby version is 3.4.10, but your Gemfile specified 3.3.8"
+    )
+
+    assert is_diagnostic_output(detail)
+    status, diagnostics = diagnose_failure(
+        18,
+        detail,
+        test_network="none",
+        failed_phase="test",
+    )
+
+    assert status == "environment_gap"
+    assert diagnostics[0].kind == "ruby_runtime_requirement"
+
+
+def test_missing_ruby_native_headers_are_an_environment_gap() -> None:
+    detail = (
+        "Could not create Makefile due to some reason, probably lack "
+        "necessary libraries and/or headers."
+    )
+
+    assert is_diagnostic_output(detail)
+    status, diagnostics = diagnose_failure(
+        1,
+        detail,
+        test_network="none",
+        failed_phase="test",
+    )
+
+    assert status == "environment_gap"
+    assert diagnostics[0].kind == "ruby_native_build_requirement"
+
+
 def test_prepare_unknown_host_is_infrastructure_failure() -> None:
     status, diagnostics = diagnose_failure(
         1,

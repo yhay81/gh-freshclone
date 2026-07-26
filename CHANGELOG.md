@@ -6,6 +6,31 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.15.0
+
+- Add conservative Ruby/Bundler detection for an exact `Gemfile.lock` with a
+  generic `ruby` platform, a pinned `BUNDLED WITH` version, complete Bundler 4
+  SHA-256 checksums, and a direct locked RSpec or Rake-backed
+  Minitest/test-unit runner. Reject Git/plugin sources, custom gem servers,
+  escaping path sources, checksum gaps, architecture-only locks, and
+  transitive test runners.
+- Download exact `.gem` archives directly from RubyGems in bounded parallel
+  transfers and verify every lock-provided SHA-256. This preparation phase
+  never evaluates `Gemfile`, gemspecs, Rakefiles, native extensions, or other
+  repository code.
+- Mount the verified gem set read-only into a second network-disabled
+  container. Install the exact locked Bundler into disposable state, perform
+  the frozen local bundle install there, compile any native extensions
+  offline, and rerun the selected test suite without reusing test results.
+  Execution policy v20 prevents reuse of evidence produced before this
+  boundary.
+- Add Docker/Apple `container` command-contract coverage plus native amd64 and
+  arm64 prepare/offline E2Es. A physical
+  `faker-ruby/faker@cca4184947e09fdd02afb8b89d25a9c8ebc7274e` proof passed
+  2,179 tests and more than 250,000 assertions offline. Its 47 checksummed gem
+  archives prepared in 2.063 seconds; an intentionally fresh repeat reused
+  only verified dependencies and reran the complete suite.
+
 ## 0.14.0
 
 - Add conservative root-level Composer/PHPUnit detection. Automatic plans

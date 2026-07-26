@@ -308,7 +308,7 @@ def _prepare_marker_paths(
         return tuple(markers)
     if effective_volume and step.ecosystem in {"maven", "gradle"}:
         return (f"/cache/{_PREPARE_MARKER}",)
-    if effective_volume and step.ecosystem in {"cmake", "dotnet", "php"}:
+    if effective_volume and step.ecosystem in {"cmake", "dotnet", "php", "ruby"}:
         return (f"/prepared/{_PREPARE_MARKER}",)
     if effective_cache and step.ecosystem in {
         "deno",
@@ -418,6 +418,7 @@ def build_runner_command(
                     "cmake",
                     "dotnet",
                     "php",
+                    "ruby",
                 }
                 and prepared_volume
             )
@@ -458,6 +459,13 @@ def build_runner_command(
                 f"&& rm -rf {quoted_working_directory}/vendor "
                 f"&& ln -s /prepared/vendor {quoted_working_directory}/vendor "
             )
+    elif prepared_volume and step.ecosystem == "ruby" and prepared_read_only:
+        prepared_setup = (
+            f"&& rm -rf {quoted_working_directory}/vendor/cache "
+            f"&& mkdir -p {quoted_working_directory}/vendor/cache "
+            f"&& cp /prepared/gems/*.gem "
+            f"{quoted_working_directory}/vendor/cache/ "
+        )
     if resolved_archive is None:
         workspace_setup = (
             'mkdir -p "$HOME" /workspace /cache '
@@ -531,6 +539,7 @@ def build_runner_command(
             "cmake",
             "dotnet",
             "php",
+            "ruby",
         }:
             readonly = ",readonly" if prepared_read_only else ""
             command.append(
@@ -604,6 +613,7 @@ def build_runner_command(
             "cmake",
             "dotnet",
             "php",
+            "ruby",
         }:
             if prepared_read_only:
                 command.extend(
@@ -916,7 +926,7 @@ def _run_step_phases(
                 command_text=step.command,
                 network_enabled=step.test_network == "enabled",
                 workspace_archive=workspace_archive,
-                prepared_read_only=step.ecosystem == "php",
+                prepared_read_only=step.ecosystem in {"php", "ruby"},
             ),
             container_name=f"gh-freshclone-{execution_id}-test",
             log_path=log_path,
@@ -1036,6 +1046,7 @@ def run_step(
         "cmake",
         "dotnet",
         "php",
+        "ruby",
     }
     effective_volume = (
         f"{prepared_volume}-i{image_key}"

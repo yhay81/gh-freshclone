@@ -70,6 +70,11 @@ _DIAGNOSTIC_OUTPUT_MARKERS = (
     "it is missing from your system",
     "does not satisfy that requirement",
     "your lock file does not contain a compatible set of packages",
+    "your ruby version is",
+    "but your gemfile specified",
+    "probably lack necessary libraries and/or headers",
+    "could not find gem",
+    "locally installed gems",
 )
 
 
@@ -235,6 +240,37 @@ def diagnose_failure(
             ),
         )
 
+    ruby_version_gap = (
+        "your ruby version is" in lowered
+        and "but your gemfile specified" in lowered
+    )
+    ruby_native_gap = (
+        "could not create makefile" in lowered
+        and "probably lack necessary libraries and/or headers" in lowered
+    )
+    if ruby_version_gap or ruby_native_gap:
+        return (
+            "environment_gap",
+            (
+                Diagnostic(
+                    kind=(
+                        "ruby_runtime_requirement"
+                        if ruby_version_gap
+                        else "ruby_native_build_requirement"
+                    ),
+                    message=(
+                        "The locked Ruby bundle requires a Ruby runtime or "
+                        "native build dependency absent from the selected "
+                        "multi-architecture image."
+                    ),
+                    confidence="high",
+                    evidence=(
+                        "Bundler or RubyGems explicitly rejected an image requirement",
+                    ),
+                ),
+            ),
+        )
+
     if any(
         marker in lowered
         for marker in (
@@ -279,6 +315,10 @@ def diagnose_failure(
     )
     if test_network == "none" and (
         offline_resolution_gap
+        or (
+            "could not find gem" in lowered
+            and "locally installed gems" in lowered
+        )
         or any(
             marker in lowered
             for marker in (
