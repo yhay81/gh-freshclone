@@ -1,0 +1,27 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+$routes = file('/proc/net/route', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+if ($routes === false) {
+    fwrite(STDERR, "could not inspect network routes\n");
+    exit(2);
+}
+foreach (array_slice($routes, 1) as $route) {
+    $columns = preg_split('/\s+/', trim($route));
+    if (is_array($columns) && ($columns[1] ?? '') === '00000000') {
+        fwrite(STDERR, "test phase retained a default network route\n");
+        exit(3);
+    }
+}
+if (!is_file(__DIR__ . '/../../autoload.php')) {
+    fwrite(STDERR, "Composer autoload state is unavailable\n");
+    exit(4);
+}
+if (!is_file(getcwd() . '/offline-install-hook.proof')) {
+    fwrite(STDERR, "offline Composer install hook did not run\n");
+    exit(5);
+}
+
+fwrite(STDOUT, "PHPUnit path fixture passed offline\n");

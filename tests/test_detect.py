@@ -10,6 +10,7 @@ from gh_freshclone.detect import (
     BOOTSTRAP_CMAKE_VERSION,
     BOOTSTRAP_NINJA_VERSION,
     CMAKE_IMAGE,
+    COMPOSER_IMAGE,
     _dependency_fingerprint,
     detect_plan,
 )
@@ -776,6 +777,158 @@ def test_java_dependency_identity_includes_wrapper_configuration(
     second = _dependency_fingerprint(tmp_path, ecosystem, image)
 
     assert first != second
+
+
+def _write_composer_project(
+    root: Path,
+    *,
+    composer: dict | None = None,
+    packages: list[dict] | None = None,
+) -> None:
+    (root / "composer.json").write_text(
+        json.dumps(
+            composer
+            or {
+                "require-dev": {
+                    "phpunit/phpunit": "^11.5",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "composer.lock").write_text(
+        json.dumps(
+            {
+                "content-hash": "locked",
+                "packages": [],
+                "packages-dev": packages
+                if packages is not None
+                else [
+                    {
+                        "name": "phpunit/phpunit",
+                        "version": "11.5.42",
+                        "type": "library",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_detects_locked_direct_phpunit_without_networked_repository_code(
+    tmp_path: Path,
+) -> None:
+    _write_composer_project(tmp_path)
+    (tmp_path / "phpunit.xml.dist").write_text(
+        '<phpunit><testsuites><testsuite name="unit" /></testsuites></phpunit>\n',
+        encoding="utf-8",
+    )
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    assert len(plan.steps) == 1
+    step = plan.steps[0]
+    assert step.ecosystem == "php"
+    assert step.image == COMPOSER_IMAGE
+    assert step.test_network == "none"
+    assert "composer install" in step.prepare_command
+    assert "--no-plugins" in step.prepare_command
+    assert "--no-scripts" in step.prepare_command
+    assert "composer install" in step.command
+    assert step.command.startswith("COMPOSER_DISABLE_NETWORK=1 ")
+    assert "COMPOSER_CACHE_DIR=/tmp/composer-cache" in step.command
+    assert "COMPOSER_HOME=/tmp/composer-home" in step.command
+    assert "--no-blocking" in step.command
+    assert "--no-plugins" in step.command
+    assert "--no-scripts" not in step.command
+    assert "vendor/bin/phpunit --colors=never" in step.command
+    assert "composer.lock:phpunit/phpunit@11.5.42" in step.evidence
+    assert "phpunit.xml.dist" in step.evidence
+
+
+def test_php_requires_an_exact_lock_and_direct_locked_phpunit(tmp_path: Path) -> None:
+    (tmp_path / "composer.json").write_text(
+        '{"require-dev":{"phpunit/phpunit":"^11.5"}}\n',
+        encoding="utf-8",
+    )
+
+    unlocked = detect_plan(_repository(), tmp_path)
+
+    assert unlocked.steps == ()
+    assert any("without composer.lock" in warning for warning in unlocked.warnings)
+
+    _write_composer_project(
+        tmp_path,
+        composer={"require-dev": {"mockery/mockery": "^1.6"}},
+    )
+    indirect = detect_plan(_repository(), tmp_path)
+
+    assert indirect.steps == ()
+    assert any("does not directly declare" in warning for warning in indirect.warnings)
+
+    _write_composer_project(tmp_path, packages=[])
+    stale = detect_plan(_repository(), tmp_path)
+
+    assert stale.steps == ()
+    assert any("does not contain" in warning for warning in stale.warnings)
+
+
+def test_php_plugin_graph_and_custom_vendor_layout_fail_closed(
+    tmp_path: Path,
+) -> None:
+    _write_composer_project(
+        tmp_path,
+        packages=[
+            {
+                "name": "phpunit/phpunit",
+                "version": "11.5.42",
+                "type": "library",
+            },
+            {
+                "name": "example/installer",
+                "version": "1.0.0",
+                "type": "composer-plugin",
+            },
+        ],
+    )
+
+    plugin = detect_plan(_repository(), tmp_path)
+
+    assert plugin.steps == ()
+    assert any(
+        "executable plugins" in warning and "example/installer" in warning
+        for warning in plugin.warnings
+    )
+
+    _write_composer_project(
+        tmp_path,
+        composer={
+            "require-dev": {"phpunit/phpunit": "^11.5"},
+            "config": {"vendor-dir": "build/vendor"},
+        },
+    )
+    custom = detect_plan(_repository(), tmp_path)
+
+    assert custom.steps == ()
+    assert any("non-default vendor-dir" in warning for warning in custom.warnings)
+
+
+def test_php_dependency_identity_includes_lock_and_phpunit_configuration(
+    tmp_path: Path,
+) -> None:
+    _write_composer_project(tmp_path)
+    configuration = tmp_path / "phpunit.xml"
+    configuration.write_text("<phpunit />\n", encoding="utf-8")
+
+    first = _dependency_fingerprint(tmp_path, "php", COMPOSER_IMAGE)
+    configuration.write_text("<phpunit cacheDirectory='.cache' />\n", encoding="utf-8")
+    second = _dependency_fingerprint(tmp_path, "php", COMPOSER_IMAGE)
+    lock = tmp_path / "composer.lock"
+    lock.write_text(lock.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    third = _dependency_fingerprint(tmp_path, "php", COMPOSER_IMAGE)
+
+    assert len({first, second, third}) == 3
 
 
 def test_detects_cmake_with_literal_ctest_enablement(tmp_path: Path) -> None:

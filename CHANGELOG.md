@@ -6,6 +6,29 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.14.0
+
+- Add conservative root-level Composer/PHPUnit detection. Automatic plans
+  require an exact `composer.lock`, a direct matching `phpunit/phpunit`
+  package, and the standard vendor/bin layout; locks missing the declared
+  runner, transitive test runners, and custom layouts fail closed with
+  explicit warnings.
+- Install the locked dependency graph in the official multi-architecture
+  Composer 2.10.1 image with plugins and scripts disabled. Persist only the
+  scoped Composer cache/vendor state, then mount it read-only, copy `vendor/`
+  into a disposable workspace, disable Composer networking, replay repository
+  install hooks without a redundant advisory lookup, and run PHPUnit in a
+  separate network-disabled workspace.
+- Reject every lock containing a Composer plugin rather than executing plugin
+  code during the network-enabled phase. Classify explicit PHP version or
+  extension incompatibilities as environment gaps. Execution policy v19
+  prevents reuse of pre-PHP evidence.
+- Cover Docker and Apple `container` command construction plus native amd64
+  and arm64 prepare/offline boundaries. A physical
+  `mockery/mockery@3a80322e874fbdce4e87e739456fe48d48a527c8`
+  proof ran 705 tests and 1,105 assertions offline; an intentionally fresh
+  repeat reused only verified dependency state.
+
 ## 0.13.0
 
 - Stream the exact committed Git tree into one deterministic tar archive and

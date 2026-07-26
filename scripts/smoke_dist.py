@@ -29,7 +29,7 @@ def main() -> int:
         raise SystemExit("receipt v6 schema is missing from the distribution")
     if PLAN_VERSION != 8:
         raise SystemExit("unexpected plan version")
-    if EXECUTION_POLICY_VERSION != 18:
+    if EXECUTION_POLICY_VERSION != 19:
         raise SystemExit("unexpected execution policy version")
     if GITHUB_STATUS_VERSION != 1:
         raise SystemExit("unexpected GitHub status interface version")

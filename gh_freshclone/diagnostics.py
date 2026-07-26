@@ -67,6 +67,9 @@ _DIAGNOSTIC_OUTPUT_MARKERS = (
     "license agreement has not been accepted",
     "cannot find a java installation on your machine",
     "toolchain download repositories have not been configured",
+    "it is missing from your system",
+    "does not satisfy that requirement",
+    "your lock file does not contain a compatible set of packages",
 )
 
 
@@ -194,6 +197,40 @@ def diagnose_failure(
                     ),
                     confidence="high",
                     evidence=("runner output explicitly reports a missing Java toolchain",),
+                ),
+            ),
+        )
+
+    composer_platform_gap = (
+        failed_phase == "prepare"
+        and (
+            "it is missing from your system" in lowered
+            or (
+                "your php version" in lowered
+                and "does not satisfy that requirement" in lowered
+            )
+        )
+    )
+    if composer_platform_gap:
+        requirement = re.search(
+            r"\brequires (?P<name>ext-[a-z0-9_.-]+)\b",
+            lowered,
+        )
+        subject = requirement.group("name") if requirement else None
+        return (
+            "environment_gap",
+            (
+                Diagnostic(
+                    kind="php_platform_requirement",
+                    subject=subject,
+                    message=(
+                        "The locked Composer graph requires a PHP version or "
+                        "extension absent from the selected multi-architecture image."
+                    ),
+                    confidence="high",
+                    evidence=(
+                        "Composer explicitly rejected a locked PHP platform requirement",
+                    ),
                 ),
             ),
         )

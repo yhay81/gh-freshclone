@@ -1,0 +1,36 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "d36455be51ca44c8b1ac2d5ae0b9ad8f",
+    "packages": [],
+    "packages-dev": [
+        {
+            "name": "phpunit/phpunit",
+            "version": "99.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/phpunit",
+                "reference": "3706b55ca108c577560c74d5e8e62f4c1b644b0c"
+            },
+            "bin": [
+                "phpunit"
+            ],
+            "type": "library",
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        }
+    ],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
+}

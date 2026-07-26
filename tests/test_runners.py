@@ -808,6 +808,91 @@ def test_dotnet_preparation_cache_requires_success_marker() -> None:
     assert markers == ("/prepared/.gh-freshclone-prepared-v1",)
 
 
+@pytest.mark.parametrize("runner", ["docker", "container"])
+def test_php_vendor_uses_scoped_prepared_volume(
+    tmp_path: Path,
+    runner: str,
+) -> None:
+    step = CheckStep(
+        "php",
+        "docker.io/library/composer:2.10.1",
+        "vendor/bin/phpunit",
+        ("composer.lock",),
+        prepare_command="composer install --no-plugins --no-scripts",
+        test_network="none",
+    )
+    cache = tmp_path / "host-cache"
+
+    command = build_runner_command(
+        runner,
+        step,
+        tmp_path,
+        cpus=2,
+        memory="4g",
+        cache_dir=cache,
+        prepared_volume="ghfc-php-cache",
+        network_enabled=False,
+        prepared_read_only=True,
+    )
+    rendered = " ".join(command)
+
+    assert "ghfc-php-cache" in rendered
+    assert "target=/prepared,readonly" in rendered
+    assert str(cache.resolve()) not in rendered
+    assert "COMPOSER_CACHE_DIR=/prepared/composer-cache" in rendered
+    assert "COMPOSER_HOME=/prepared/composer-home" in rendered
+    assert "COMPOSER_ALLOW_SUPERUSER=1" in rendered
+    assert "cp -R /prepared/vendor/. /workspace/vendor/" in command[-1]
+    assert "ln -s /prepared/vendor /workspace/vendor" not in command[-1]
+    if runner == "container":
+        assert command[command.index("--network") + 1] == "none"
+    else:
+        assert "--network=none" in command
+
+    prepare_command = build_runner_command(
+        runner,
+        step,
+        tmp_path,
+        cpus=2,
+        memory="4g",
+        prepared_volume="ghfc-php-cache",
+        network_enabled=True,
+    )
+    assert "ln -s /prepared/vendor /workspace/vendor" in prepare_command[-1]
+    assert "target=/prepared,readonly" not in " ".join(prepare_command)
+
+
+def test_php_preparation_cache_requires_success_marker() -> None:
+    markers = runners._prepare_marker_paths(
+        CheckStep(
+            "php",
+            "docker.io/library/composer:2.10.1",
+            "vendor/bin/phpunit",
+            prepare_command="composer install",
+        ),
+        effective_cache=None,
+        effective_volume="ghfc-php-cache",
+        support_volume=None,
+    )
+
+    assert markers == ("/prepared/.gh-freshclone-prepared-v1",)
+
+
+def test_readonly_prepared_mount_requires_a_managed_volume(tmp_path: Path) -> None:
+    with pytest.raises(
+        runners.RunnerError,
+        match="read-only prepared mount requires",
+    ):
+        build_runner_command(
+            "docker",
+            _step(),
+            tmp_path,
+            cpus=2,
+            memory="4g",
+            prepared_read_only=True,
+        )
+
+
 def test_cmake_preparation_uses_image_scoped_managed_volume(
     monkeypatch,
     tmp_path: Path,

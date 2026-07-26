@@ -13,8 +13,8 @@ JSON receipt. It distinguishes repository test failures from runner failures
 and missing environment capabilities.
 
 Automatic detection covers root-level Python, Node.js/Bun/Deno, Rust, Go,
-Maven, Gradle, CMake, and .NET projects. A repository-owned configuration
-compiles explicit monorepo steps. The package is alpha software.
+Maven, Gradle, Composer/PHPUnit, CMake, and .NET projects. A repository-owned
+configuration compiles explicit monorepo steps. The package is alpha software.
 
 ## Why it exists
 
@@ -56,7 +56,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.13.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.14.0"
 gh-freshclone doctor
 ```
 
@@ -250,6 +250,18 @@ initialization failures as a JSON error envelope on standard output:
   `FETCHCONTENT_FULLY_DISCONNECTED=ON` and no container network; compiled
   outputs are not reused. `ctest --no-tests=error` prevents a zero-test build
   from becoming a false PASS.
+- Composer planning requires `composer.lock`, a direct `phpunit/phpunit`
+  declaration, the matching locked package, and the default `vendor/` layout.
+  It rejects locked Composer plugins instead of allowing package code to run
+  during dependency acquisition. The official multi-architecture Composer
+  image installs the exact lock with both plugins and scripts disabled. A
+  second network-disabled container mounts that state read-only, copies
+  `vendor/` into its disposable workspace, explicitly disables Composer
+  networking and redundant policy lookups, replays the no-change install
+  lifecycle (including repository autoload/install hooks), and runs the locked
+  `vendor/bin/phpunit`. Hook and test writes cannot poison the next proof.
+  Missing locked PHP extensions or an incompatible runtime are reported as an
+  environment gap rather than a repository test failure.
 - .NET planning parses one committed root solution without evaluating MSBuild.
   A declared supported SDK 8/9/10 selects Microsoft's official multi-arch SDK
   image; `quick` chooses one ordinary unit-test project and, when a literal
@@ -335,6 +347,17 @@ fresh repeat reused only verified restore state, recompiled and reran all
 tests, and completed in 28.063 seconds. Serilog produced useful negative
 evidence instead: its exact commit failed restore because its own
 warning-as-error policy rejected five current high-severity NuGet advisories.
+
+The Composer/PHPUnit follow-up accepted
+`mockery/mockery@3a80322e874fbdce4e87e739456fe48d48a527c8`
+without repository configuration. Fresh locked dependency preparation took
+7.994 seconds; a separate offline container ran 705 tests with 1,105
+assertions (10 skipped), and the complete proof took 23.963 seconds. An
+intentionally fresh repeat verified the prepared-volume marker, replayed the
+offline install hooks, reran PHPUnit, and completed in 16.661 seconds.
+`ramsey/uuid` supplied the fail-closed control: its lock contains four
+executable Composer plugins, so automatic planning rejected it and named the
+plugins instead of running them while network access was available.
 
 A fresh probe of public pull request
 [`pallets/itsdangerous#428`](https://github.com/pallets/itsdangerous/pull/428)
@@ -447,10 +470,11 @@ probe on a dedicated self-hosted runner labelled
 `gh-freshclone-apple-container`. GitHub-hosted macOS runners cannot provide
 this proof because [nested virtualization is not
 supported](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#limitations).
-The ordinary CI workflow additionally runs the CMake prepare/offline E2E on a
-native GitHub-hosted `ubuntu-24.04-arm` runner. This continuously verifies the
-same arm64 OCI image and CMake/Ninja wheel path used by Apple silicon, while
-the self-hosted workflow retains coverage of Apple `container` itself.
+The ordinary CI workflow additionally runs the CMake, .NET, and
+Composer/PHPUnit prepare/offline E2Es on native GitHub-hosted
+`ubuntu-24.04-arm` runners. This continuously verifies the same arm64 OCI
+images and dependency paths used by Apple silicon, while the self-hosted
+workflow retains coverage of Apple `container` itself.
 A physical Apple silicon run and cold/warm public-repository measurements are
 recorded in
 [`docs/field-trial-2026-07-25.md`](docs/field-trial-2026-07-25.md#physical-apple-container-validation).
@@ -514,6 +538,11 @@ Current evidence sources include:
   compatibility and literal Java 17/21/25 toolchain declarations select a
   multi-architecture official Gradle image, while unwrapped builds are never
   auto-run
+- Composer/PHPUnit: `composer.json`, an exact `composer.lock`, a direct locked
+  `phpunit/phpunit` package, and an optional `phpunit.xml(.dist)`; custom
+  vendor/bin layouts, locks missing the declared runner, transitive runners,
+  and executable Composer plugin graphs are reported rather than guessed or
+  executed
 - .NET: one root `.sln` or `.slnx`, optional `global.json`, and statically
   listed project paths; `quick` selects one ordinary unit-test project while
   rejecting benchmark, integration, performance, sample, and utility projects

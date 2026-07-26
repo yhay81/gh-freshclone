@@ -272,6 +272,13 @@ def _cache_environment(
             "DOTNET_NOLOGO=1",
             "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1",
         )
+    if ecosystem == "php":
+        root = "/prepared" if prepared_volume else "/cache"
+        return (
+            f"COMPOSER_CACHE_DIR={root}/composer-cache",
+            f"COMPOSER_HOME={root}/composer-home",
+            "COMPOSER_ALLOW_SUPERUSER=1",
+        )
     return ()
 
 
@@ -301,7 +308,7 @@ def _prepare_marker_paths(
         return tuple(markers)
     if effective_volume and step.ecosystem in {"maven", "gradle"}:
         return (f"/cache/{_PREPARE_MARKER}",)
-    if effective_volume and step.ecosystem in {"cmake", "dotnet"}:
+    if effective_volume and step.ecosystem in {"cmake", "dotnet", "php"}:
         return (f"/prepared/{_PREPARE_MARKER}",)
     if effective_cache and step.ecosystem in {
         "deno",
@@ -381,6 +388,7 @@ def build_runner_command(
     command_text: str | None = None,
     network_enabled: bool = True,
     workspace_archive: Path | None = None,
+    prepared_read_only: bool = False,
 ) -> list[str]:
     """Build a no-secret, resource-limited OCI invocation."""
 
@@ -392,6 +400,8 @@ def build_runner_command(
     resolved_archive = workspace_archive.resolve() if workspace_archive else None
     if resolved_archive is not None and not resolved_archive.is_file():
         raise RunnerError(f"workspace archive does not exist: {resolved_archive}")
+    if prepared_read_only and not prepared_volume:
+        raise RunnerError("a read-only prepared mount requires a prepared volume")
     resolved_cache = (
         cache_dir.resolve()
         if (
@@ -407,6 +417,7 @@ def build_runner_command(
                     "gradle",
                     "cmake",
                     "dotnet",
+                    "php",
                 }
                 and prepared_volume
             )
@@ -433,6 +444,20 @@ def build_runner_command(
             f"&& ln -s /prepared/node_modules "
             f"{quoted_working_directory}/node_modules "
         )
+    elif prepared_volume and step.ecosystem == "php":
+        if prepared_read_only:
+            prepared_setup = (
+                f"&& rm -rf {quoted_working_directory}/vendor "
+                f"&& mkdir -p {quoted_working_directory}/vendor "
+                f"&& cp -R /prepared/vendor/. "
+                f"{quoted_working_directory}/vendor/ "
+            )
+        else:
+            prepared_setup = (
+                "&& mkdir -p /prepared/vendor "
+                f"&& rm -rf {quoted_working_directory}/vendor "
+                f"&& ln -s /prepared/vendor {quoted_working_directory}/vendor "
+            )
     if resolved_archive is None:
         workspace_setup = (
             'mkdir -p "$HOME" /workspace /cache '
@@ -505,9 +530,12 @@ def build_runner_command(
             "deno",
             "cmake",
             "dotnet",
+            "php",
         }:
+            readonly = ",readonly" if prepared_read_only else ""
             command.append(
-                f"--mount=type=volume,source={prepared_volume},target=/prepared"
+                f"--mount=type=volume,source={prepared_volume},"
+                f"target=/prepared{readonly}"
             )
         elif prepared_volume and step.ecosystem in {"node", "bun"}:
             command.append(
@@ -575,8 +603,17 @@ def build_runner_command(
             "deno",
             "cmake",
             "dotnet",
+            "php",
         }:
-            command.extend(("--volume", f"{prepared_volume}:/prepared"))
+            if prepared_read_only:
+                command.extend(
+                    (
+                        "--mount",
+                        f"type=volume,source={prepared_volume},target=/prepared,readonly",
+                    )
+                )
+            else:
+                command.extend(("--volume", f"{prepared_volume}:/prepared"))
         elif prepared_volume and step.ecosystem in {"node", "bun"}:
             command.extend(
                 (
@@ -849,6 +886,7 @@ def _run_step_phases(
                 ),
                 network_enabled=True,
                 workspace_archive=workspace_archive,
+                prepared_read_only=False,
             ),
             container_name=f"gh-freshclone-{execution_id}-prepare",
             log_path=log_path,
@@ -878,6 +916,7 @@ def _run_step_phases(
                 command_text=step.command,
                 network_enabled=step.test_network == "enabled",
                 workspace_archive=workspace_archive,
+                prepared_read_only=step.ecosystem == "php",
             ),
             container_name=f"gh-freshclone-{execution_id}-test",
             log_path=log_path,
@@ -996,6 +1035,7 @@ def run_step(
         "gradle",
         "cmake",
         "dotnet",
+        "php",
     }
     effective_volume = (
         f"{prepared_volume}-i{image_key}"
