@@ -27,7 +27,7 @@ Run the required gates:
 uv run pytest -q
 uv run ruff check .
 uv run pyright
-uv run bandit -r gh_freshclone -q
+uv run bandit -r gh_freshclone scripts/github_action.py -q
 uv run coverage run -m pytest -q
 uv run coverage report
 ```

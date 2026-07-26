@@ -1,0 +1,73 @@
+name: gh-freshclone baseline
+description: Prove the fastest trustworthy baseline for an exact public GitHub commit
+author: yhay81
+
+inputs:
+  repository:
+    description: Public OWNER/REPO, immutable GitHub URL, or the current checkout (.)
+    required: true
+  ref:
+    description: Exact commit SHA or other Git ref; prefer a full commit SHA
+    required: false
+    default: ""
+  profile:
+    description: Baseline profile (quick, reproduce, or full)
+    required: false
+    default: quick
+  component:
+    description: Canonical repository-relative component
+    required: false
+    default: "."
+  runner:
+    description: OCI runner available on this Linux job (docker or podman)
+    required: false
+    default: docker
+  test-network:
+    description: Test-phase network policy (none or enabled)
+    required: false
+    default: none
+  no-cache:
+    description: Rerun the baseline instead of reusing an immutable PASS receipt
+    required: false
+    default: "false"
+  cpus:
+    description: Container CPU limit
+    required: false
+    default: "2"
+  memory:
+    description: Container memory limit
+    required: false
+    default: 4g
+
+outputs:
+  result-path:
+    description: Absolute path to the gh-freshclone JSON result
+    value: ${{ steps.baseline.outputs.result-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv and Python
+      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      with:
+        python-version: "3.13"
+        enable-cache: true
+    - name: Prove baseline
+      id: baseline
+      shell: bash
+      env:
+        GHFC_ACTION_PATH: ${{ github.action_path }}
+        GHFC_REPOSITORY: ${{ inputs.repository }}
+        GHFC_REF: ${{ inputs.ref }}
+        GHFC_PROFILE: ${{ inputs.profile }}
+        GHFC_COMPONENT: ${{ inputs.component }}
+        GHFC_RUNNER: ${{ inputs.runner }}
+        GHFC_TEST_NETWORK: ${{ inputs.test-network }}
+        GHFC_NO_CACHE: ${{ inputs.no-cache }}
+        GHFC_CPUS: ${{ inputs.cpus }}
+        GHFC_MEMORY: ${{ inputs.memory }}
+      run: python "$GHFC_ACTION_PATH/scripts/github_action.py"
+
+branding:
+  icon: check-circle
+  color: blue
