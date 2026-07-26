@@ -67,6 +67,31 @@ def test_docker_command_is_limited_and_passes_no_host_environment(
     assert "cp -a" not in rendered
 
 
+def test_docker_command_extracts_single_workspace_archive(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "workspace.tar"
+    archive.write_bytes(b"archive")
+
+    command = build_runner_command(
+        "docker",
+        _step(),
+        tmp_path,
+        cpus=2,
+        memory="4g",
+        workspace_archive=archive,
+    )
+    rendered = " ".join(command)
+
+    assert (
+        f"type=bind,source={archive.resolve()},target=/input.tar,readonly"
+        in rendered
+    )
+    assert "tar -xf /input.tar -C /workspace" in command[-1]
+    assert "/workspace/.git/objects/info/alternates" in command[-1]
+    assert "cp -R /input/. /workspace/" not in command[-1]
+
+
 def test_apple_container_command_uses_volume_and_resource_limits(
     tmp_path: Path,
 ) -> None:
@@ -97,6 +122,31 @@ def test_apple_container_command_uses_volume_and_resource_limits(
         if value == "--cap-add"
     ]
     assert cap_adds == ["CHOWN", "FOWNER"]
+
+
+def test_apple_container_mounts_workspace_archive(tmp_path: Path) -> None:
+    archive = tmp_path / "workspace.tar"
+    archive.write_bytes(b"archive")
+
+    command = build_runner_command(
+        "container",
+        _step(),
+        tmp_path,
+        cpus=4,
+        memory="8g",
+        workspace_archive=archive,
+    )
+    mounts = [
+        command[index + 1]
+        for index, value in enumerate(command)
+        if value == "--mount"
+    ]
+
+    assert (
+        f"type=bind,source={archive.resolve()},target=/input.tar,readonly"
+        in mounts
+    )
+    assert "tar -xf /input.tar -C /workspace" in command[-1]
 
 
 def test_apple_container_requires_whole_cpu_limit(tmp_path: Path) -> None:

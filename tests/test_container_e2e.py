@@ -85,6 +85,18 @@ def test_network_is_absent_and_input_is_read_only():
 def test_guest_architecture():
     if EXPECTED_ARCH is not None:
         assert platform.machine() == EXPECTED_ARCH
+
+
+def test_workspace_archive_restores_writable_git_metadata():
+    metadata = Path(".git")
+    assert (metadata / "index").is_file()
+    assert (metadata / "objects" / "info" / "alternates").read_text().strip() == (
+        "/input/.git/objects"
+    )
+    probe = metadata / "refs" / "gh-freshclone-probe"
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text("archive metadata is writable")
+    assert probe.read_text() == "archive metadata is writable"
 """.lstrip()
     if E2E_RUNNER == "container":
         boundary_source = boundary_source.replace(

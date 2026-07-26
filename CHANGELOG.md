@@ -6,6 +6,24 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.13.0
+
+- Stream the exact committed Git tree into one deterministic tar archive and
+  mount that single file into every prepare/test container. This removes the
+  per-file Windows/macOS VM bind-copy bottleneck while excluding untracked and
+  modified working-tree content by construction.
+- Preserve executable modes, symbolic links, and commit timestamps. Rebuild a
+  small writable `.git` metadata layer inside each disposable workspace while
+  reading immutable objects from the original checkout, so ordinary Git
+  version probes keep working without copying object packs.
+- Fall back to the previous read-only bind copy when the committed tree cannot
+  be archived safely or portably. Execution policy v18 prevents reuse of
+  evidence made under the old transport contract.
+- In the Windows field trial, an 8,517-file PHPStan checkout took more than
+  124 seconds to copy through the Docker bind boundary. Its exact 26.52 MiB
+  archive was built in 1.224 seconds and extracted with working Git metadata
+  in 2.681 seconds, a greater-than-96% setup reduction.
+
 ## 0.12.0
 
 - Add a conservative automatic .NET baseline for repositories with exactly

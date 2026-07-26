@@ -8,7 +8,7 @@ from typing import Any
 
 PLAN_VERSION = 8
 RECEIPT_VERSION = 6
-EXECUTION_POLICY_VERSION = 17
+EXECUTION_POLICY_VERSION = 18
 _MEMORY_LIMIT = re.compile(
     r"[1-9]\d*(?:\.\d+)?(?:[bkmg]i?b?|b)?",
     re.IGNORECASE,

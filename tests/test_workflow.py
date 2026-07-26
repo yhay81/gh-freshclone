@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from gh_freshclone import workflow
 from gh_freshclone.model import BaselinePlan, CheckStep, Repository
 from gh_freshclone.runners import RunnerError, RunnerExecution
 from gh_freshclone.workflow import check_repository, create_plan
+from gh_freshclone.workspace_archive import WorkspaceArchiveError
 
 
 @pytest.fixture(autouse=True)
@@ -384,6 +386,14 @@ def test_docker_reuses_readonly_checkout_without_host_copy(
         assert workspace == canonical_checkout[0]
         assert (workspace / ".git").is_dir()
         assert (workspace / "tests" / "test_sample.py").is_file()
+        archive = kwargs["workspace_archive"]
+        assert archive.is_file()
+        with tarfile.open(archive) as workspace_tar:
+            names = workspace_tar.getnames()
+        assert "tests/test_sample.py" in names
+        assert not any(
+            name == ".git" or name.startswith(".git/") for name in names
+        )
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text("ok\n", encoding="utf-8")
         return RunnerExecution(0, 0.1, "ok")
@@ -393,3 +403,37 @@ def test_docker_reuses_readonly_checkout_without_host_copy(
     receipt, _, _ = check_repository(str(git_repository), use_cache=False, echo=False)
 
     assert receipt.status == "pass"
+
+
+def test_check_falls_back_to_readonly_bind_copy_when_archive_is_unsafe(
+    monkeypatch,
+    git_repository: Path,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(
+        "gh_freshclone.workflow.select_runner",
+        lambda requested: "docker",
+    )
+
+    def reject_archive(workspace, destination, commit_sha):
+        raise WorkspaceArchiveError("non-portable path")
+
+    def fake_run_step(runner, step, workspace, log_path, **kwargs):
+        assert kwargs["workspace_archive"] is None
+        assert (workspace / ".git").is_dir()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("ok\n", encoding="utf-8")
+        return RunnerExecution(0, 0.1, "ok")
+
+    monkeypatch.setattr(
+        "gh_freshclone.workspace_archive.create_workspace_archive",
+        reject_archive,
+    )
+    monkeypatch.setattr("gh_freshclone.workflow.run_step", fake_run_step)
+
+    receipt, _, _ = check_repository(str(git_repository), use_cache=False, echo=True)
+
+    assert receipt.status == "pass"
+    assert "workspace archive unavailable; using bind copy" in capsys.readouterr().out
