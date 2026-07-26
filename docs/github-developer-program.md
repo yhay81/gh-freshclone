@@ -47,21 +47,21 @@ execution-policy, plan, and commit identities.
 
 KAGARI, the author's resident security-research coordinator, uses
 `gh-freshclone` as its public-repository G1 baseline gate. The integration pins
-release v0.18.0 by source commit
-`800d76bea5efd80f19ac019fd6d336daaeb3ad42` and accepts only plan v10,
+release v0.19.0 by source commit
+`4e0cc0f56f1ed7137582adb85aab927a41658047` and accepts only plan v10,
 receipt v7, execution policy v22, and GitHub-status interface v1. It rejects
 private targets, mismatched commits, malformed results, and incoherent source
 provenance instead of treating them as a green baseline.
 
-The first physical v0.18 integration proof checked
+An independent production-aligned v0.19.0 proof on 2026-07-27 checked
 `dependabot/dependabot-core@6c8bb8bd9cb7ec79c324bc550a992ab66201e76a`
-at the bounded `npm_and_yarn/helpers` component. The default offline run
-preserved a high-confidence network-policy gap. One explicitly
-network-enabled retry then created a fresh isolated checkout from the exact
-source cache, passed `git fsck --full --strict`, reran all five suites and 25
-tests, and produced a PASS proof. KAGARI recorded
-`source_cache_hit=true` and `source_validation=git-fsck-full-strict`; it did
-not reuse a test result.
+at the bounded `npm_and_yarn/helpers` component. It installed the public source
+at the pinned commit, forced `--no-cache`, created a fresh credential-free
+checkout, and ran the explicitly network-enabled dependency preparation and
+test phases in Docker 29.6.2. The proof reported
+`source_cache_hit=false`, `source_validation=fresh-git-fetch`, five passing
+test suites, 25 passing tests, plan v10, receipt v7, and execution policy v22.
+It produced a new PASS receipt instead of reusing a test result.
 
 The resident KAGARI worker runs independently of this repository's CI and
 consumes the public release through the standalone CLI. This supplies a real
