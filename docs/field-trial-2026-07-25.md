@@ -371,3 +371,97 @@ failures and 26 fixture errors. Some failing paths attempted DNS under the
 offline policy and were stopped. This is useful failure evidence rather than
 a false PASS; it also demonstrates why immutable source alone cannot make an
 unlocked historical dependency graph reproducible.
+
+## Maven and Gradle baseline follow-up — 2026-07-26
+
+An expanded plan trial used 16 current public repositories spanning large
+polyglots, framework cores, build systems, and projects outside the automatic
+support boundary:
+
+| Repository | Initial automatic result | Java follow-up |
+|---|---|---|
+| `grafana/grafana` | Node.js + Go | unchanged |
+| `vercel/swr` | Node.js | unchanged |
+| `kubernetes/kubernetes` | Go | unchanged |
+| `hashicorp/vault` | Go | unchanged |
+| `facebook/react` | Node.js | unchanged |
+| `protocolbuffers/protobuf` | no root baseline | unchanged |
+| `OpenPrinting/cups` | no root baseline | unchanged |
+| `signalapp/libsignal` | Rust | unchanged |
+| `apache/logging-log4j2` | no root baseline | Maven |
+| `spring-projects/spring-framework` | no root baseline | Gradle |
+| `jenkinsci/jenkins` | Node.js only | Node.js + Maven |
+| `rails/rails` | no root baseline | unchanged |
+| `laravel/framework` | no root baseline | unchanged |
+| `php/php-src` | no root baseline | unchanged |
+| `ruby/ruby` | Rust evidence | unchanged |
+| `wordpress/wordpress-develop` | Node.js | unchanged |
+
+Adding conservative Java compilation expanded useful root detection from 9 of
+16 to 11 of 16 without guessing C/C++, PHP, or Ruby commands. Additional
+immutable Java plans covered `apache/commons-lang`, wrapper-based
+`apache/logging-log4j2`, mixed `jenkinsci/jenkins`, wrapper-based
+`spring-projects/spring-framework`, and dual-build
+`spring-projects/spring-petclinic`. Physical Gradle iterations used these exact
+targets:
+
+| Repository | Commit | Observation |
+|---|---:|---|
+| `junit-team/junit5` | `4782f9e4e4b5` | exposed JDK and missing-`git` image assumptions |
+| `diffplug/spotless` | `3924217d5f71` | reached the offline phase; plugin configuration required remote metadata |
+| `ben-manes/gradle-versions-plugin` | `743b5c95a9ae` | reached offline tests; TestKit attempted other Gradle distribution downloads |
+| `spring-projects/spring-petclinic` | `f182358d02e4` | Maven and Gradle both passed in `full` |
+
+Planning reads only committed POM, wrapper, build, and wrapper-properties
+files. It does not invoke Maven, Gradle, or a wrapper on the host. A committed
+Gradle wrapper is mandatory. For a dual Maven/Gradle checkout, quick and
+reproduce select one build deterministically while `full` runs both.
+
+Physical execution exposed several defects that fixture-only testing had not:
+
+1. Maven's `dependency:go-offline` did not fetch Surefire's dynamically chosen
+   JUnit Platform provider or a matching launcher. The first Petclinic offline
+   phase therefore stopped before tests. Version 0.9.0 prefetches those runtime
+   artifacts during preparation; the same immutable commit then ran 69 tests
+   with zero failures or errors and two skips under network isolation.
+2. A Temurin-only Gradle image omitted `git`, which real build metadata used.
+   Official Gradle images supply the ordinary build tool environment and have
+   both `linux/amd64` and `linux/arm64` manifests for the selected JDK tags.
+3. A root task resolving subproject configurations violated Gradle's project
+   lock, and configuration-cache serialization rejected the injected closure.
+   The final static init script registers one resolver task per project,
+   aggregates them only after evaluation, and disables configuration-cache
+   reuse for preparation. Repository test methods still execute only in the
+   second container.
+4. Wrapper version alone is not a Java requirement. Petclinic uses Gradle
+   9.5.1 but explicitly declares a Java 17 toolchain; selecting JDK 25 from the
+   wrapper caused a deterministic preparation failure. Literal Java 17, 21,
+   and 25 toolchain evidence now overrides the compatible wrapper default and
+   participates in the plan digest.
+5. Some Gradle tests intentionally download other Gradle distributions, some
+   plugins parse remote metadata during configuration, and Build Scan can
+   require external Terms of Use. The tool does not silently grant test
+   network or accept an agreement. Early diagnostic lines are retained beyond
+   the ordinary output tail and classified as `network_policy`,
+   `missing_java_toolchain`, or `external_agreement_required`.
+
+The final strict physical proof ran
+`spring-projects/spring-petclinic@f182358d02e4` with `profile=full`. Maven
+`verify` passed from a network-disabled container in 100.225 seconds after a
+3.129-second verified preparation-cache hit. Gradle then selected the
+repository's declared Java 17 toolchain, completed cold dependency preparation
+in 534.838 seconds, and passed `check` offline in 790.727 seconds of total
+runner time. End-to-end acquisition and both build systems took 897.90 seconds.
+No execution container remained afterward.
+
+An immediately repeated `--no-cache` proof reused only verified dependency
+preparation; it did not reuse the PASS receipt or test outputs. Maven
+preparation took 4.405 seconds and reran `verify` in 112.919 seconds. Gradle
+preparation fell from 534.838 to 2.112 seconds and reran `check` in 195.709
+seconds. End-to-end time fell to 318.27 seconds, a 64.6% reduction while both
+test phases remained network-disabled.
+
+The native runner suite also creates a minimal committed Maven/JUnit project.
+It performs a cold dependency preparation and then passes one JUnit test in a
+second network-disabled container. The complete Docker E2E suite finished with
+5 passed and the Apple-only lifecycle probe skipped in 265.87 seconds.

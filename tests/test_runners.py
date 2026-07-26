@@ -496,6 +496,65 @@ def test_python_nested_working_directory_uses_persistent_environment(
     assert "cd /workspace/services/api && .venv/bin/python -m pytest" in command[-1]
 
 
+@pytest.mark.parametrize(
+    ("ecosystem", "environment"),
+    [
+        ("maven", "--env=MAVEN_USER_HOME=/cache/maven-home"),
+        ("gradle", "--env=GRADLE_USER_HOME=/cache/gradle"),
+    ],
+)
+def test_java_build_tools_use_scoped_host_cache(
+    tmp_path: Path,
+    ecosystem: str,
+    environment: str,
+) -> None:
+    step = CheckStep(
+        ecosystem,
+        "eclipse-temurin:21-jdk-noble",
+        "test command",
+        ("build manifest",),
+        prepare_command="prepare command",
+        test_network="none",
+    )
+    cache = tmp_path / "dependency-cache"
+
+    command = build_runner_command(
+        "docker",
+        step,
+        tmp_path,
+        cpus=2,
+        memory="4g",
+        cache_dir=cache,
+    )
+
+    assert environment in command
+    assert (
+        f"--mount=type=bind,source={cache.resolve()},target=/cache"
+        in command
+    )
+    assert "target=/prepared" not in " ".join(command)
+
+
+@pytest.mark.parametrize("ecosystem", ["maven", "gradle"])
+def test_java_preparation_cache_requires_success_marker(
+    tmp_path: Path,
+    ecosystem: str,
+) -> None:
+    markers = runners._prepare_marker_paths(
+        CheckStep(
+            ecosystem,
+            "eclipse-temurin:21-jdk-noble",
+            "test command",
+            prepare_command="prepare command",
+        ),
+        effective_cache=tmp_path / "dependency-cache",
+        effective_volume=None,
+        support_volume=None,
+    )
+
+    assert markers == ("/cache/.gh-freshclone-prepared-v1",)
+
+
 def test_run_step_uses_distinct_prepare_and_offline_test_containers(
     monkeypatch,
     tmp_path: Path,
@@ -837,6 +896,27 @@ def test_phase_log_is_bounded_while_process_output_is_drained(
     assert result.returncode == 0
     assert log_path.stat().st_size <= 256
     assert "output truncated at 256 bytes" in log_path.read_text(encoding="utf-8")
+
+
+def test_phase_detail_preserves_early_gradle_network_diagnostic(tmp_path: Path) -> None:
+    script = (
+        "print('java.net.UnknownHostException: services.gradle.org'); "
+        "[print(f'ordinary output {index}') for index in range(30)]; "
+        "raise SystemExit(1)"
+    )
+
+    result = runners._execute_phase(
+        runner="docker",
+        command=[sys.executable, "-c", script],
+        container_name="unused",
+        log_path=tmp_path / "network-failure.log",
+        phase="test",
+        echo=False,
+    )
+
+    assert result.returncode == 1
+    assert "--- diagnostic evidence ---" in result.detail
+    assert "UnknownHostException: services.gradle.org" in result.detail
 
 
 def test_nonzero_runner_exit_attempts_named_container_cleanup(

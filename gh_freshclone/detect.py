@@ -17,6 +17,7 @@ DEFAULT_PYTHON_MINOR = 13
 DEFAULT_NODE_MAJOR = 24
 BOOTSTRAP_UV_VERSION = "0.11.32"
 BOOTSTRAP_BUN_VERSION = "1.3.14"
+MAVEN_IMAGE = "docker.io/library/maven:3.9-eclipse-temurin-21"
 _PREPARED_PYTEST_COMMAND = (
     "PATH=/prepared/venv/bin:$PATH "
     "/prepared/venv/bin/python -m pytest -q"
@@ -47,6 +48,24 @@ _DEPENDENCY_FILES = {
     "deno": ("deno.lock", "deno.json", "deno.jsonc"),
     "rust": ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "rust-toolchain"),
     "go": ("go.sum", "go.mod"),
+    "maven": (
+        "pom.xml",
+        "mvnw",
+        ".mvn/maven.config",
+        ".mvn/jvm.config",
+        ".mvn/wrapper/maven-wrapper.properties",
+    ),
+    "gradle": (
+        "gradlew",
+        "settings.gradle",
+        "settings.gradle.kts",
+        "build.gradle",
+        "build.gradle.kts",
+        "gradle.properties",
+        "gradle.lockfile",
+        "gradle/libs.versions.toml",
+        "gradle/wrapper/gradle-wrapper.properties",
+    ),
 }
 _ROOT_INPUT_FILES = {
     CONFIG_NAME,
@@ -867,6 +886,165 @@ def _detect_go(root: Path) -> CheckStep | None:
     )
 
 
+def _detect_maven(root: Path, profile: str) -> CheckStep | None:
+    pom = root / "pom.xml"
+    if not pom.is_file():
+        return None
+    wrapper = root / "mvnw"
+    executable = "sh ./mvnw" if wrapper.is_file() else "mvn"
+    base = f"{executable} -B -ntp -Dmaven.repo.local=/cache/m2"
+    fetch = "mvn -B -ntp -Dmaven.repo.local=/cache/m2 dependency:get"
+    lifecycle = "verify" if profile == "full" else "test"
+    provider_prefetch = (
+        "for provider_pom in "
+        "/cache/m2/org/apache/maven/plugins/maven-surefire-plugin/*/"
+        "maven-surefire-plugin-*.pom; do "
+        '[ -f "$provider_pom" ] || continue; '
+        'provider_version=$(basename "$(dirname "$provider_pom")"); '
+        "for provider in surefire-junit3 surefire-junit4 "
+        "surefire-junit47 surefire-junit-platform surefire-testng; do "
+        f'{fetch} -Dartifact="org.apache.maven.surefire:'
+        '${provider}:${provider_version}" || true; '
+        "done; done; "
+        "for platform_pom in "
+        "/cache/m2/org/junit/platform/junit-platform-engine/*/"
+        "junit-platform-engine-*.pom; do "
+        '[ -f "$platform_pom" ] || continue; '
+        'platform_version=$(basename "$(dirname "$platform_pom")"); '
+        f'{fetch} -Dartifact="org.junit.platform:'
+        'junit-platform-launcher:${platform_version}" || true; '
+        "done"
+    )
+    evidence = ["pom.xml", f"profile.{profile}"]
+    if wrapper.is_file():
+        evidence.append("mvnw")
+    wrapper_properties = root / ".mvn" / "wrapper" / "maven-wrapper.properties"
+    if wrapper_properties.is_file():
+        evidence.append(".mvn/wrapper/maven-wrapper.properties")
+    return _step(
+        root,
+        "maven",
+        MAVEN_IMAGE,
+        f"{base} -o {lifecycle}",
+        evidence,
+        prepare_command=(
+            f"{base} -DskipTests dependency:go-offline && {provider_prefetch}"
+        ),
+    )
+
+
+def _detect_gradle(
+    root: Path,
+    profile: str,
+) -> tuple[CheckStep | None, list[str]]:
+    manifests = [
+        name
+        for name in (
+            "settings.gradle",
+            "settings.gradle.kts",
+            "build.gradle",
+            "build.gradle.kts",
+        )
+        if (root / name).is_file()
+    ]
+    if not manifests:
+        return None, []
+    wrapper = root / "gradlew"
+    if not wrapper.is_file():
+        return (
+            None,
+            [
+                (
+                    "Gradle build files were found without a committed gradlew "
+                    "wrapper; use .gh-freshclone.toml for an explicit baseline."
+                )
+            ],
+        )
+    base = "sh ./gradlew --no-daemon --console=plain --max-workers=2"
+    lifecycle = "check" if profile == "full" else "test"
+    dependency_resolver = (
+        "gradle.beforeProject { project -> "
+        'project.tasks.register("ghFreshcloneResolveProjectDependencies") { '
+        "doLast { project.configurations.findAll { configuration -> "
+        "def name = configuration.name.toLowerCase(); "
+        "configuration.canBeResolved && name.contains(\"test\") && "
+        'name.endsWith("runtimeclasspath") '
+        "}.each { configuration -> configuration.resolve() } "
+        "} } }; "
+        "gradle.projectsEvaluated { def root = gradle.rootProject; "
+        'root.tasks.register("ghFreshcloneResolveDependencies") { '
+        "dependsOn(root.allprojects.collect { project -> "
+        'project.tasks.named("ghFreshcloneResolveProjectDependencies") '
+        "}) } }"
+    )
+    prepare_command = (
+        f"printf '%s\\n' {shlex.quote(dependency_resolver)} "
+        f"> /tmp/gh-freshclone-resolve.gradle && {base} "
+        "--no-configuration-cache "
+        "--init-script /tmp/gh-freshclone-resolve.gradle "
+        "testClasses ghFreshcloneResolveDependencies"
+    )
+    evidence = [*manifests, "gradlew", f"profile.{profile}"]
+    wrapper_properties = root / "gradle" / "wrapper" / "gradle-wrapper.properties"
+    java_major = 21
+    if wrapper_properties.is_file():
+        evidence.append("gradle/wrapper/gradle-wrapper.properties")
+        try:
+            wrapper_text = wrapper_properties.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            wrapper_text = ""
+        match = re.search(
+            r"gradle-(\d+)\.(\d+)(?:\.\d+)?"
+            r"(?:-[^/\\]+)?-(?:bin|all)\.zip",
+            wrapper_text,
+        )
+        if match:
+            gradle_version = int(match.group(1)), int(match.group(2))
+            if gradle_version < (8, 5):
+                java_major = 17
+            evidence.append(
+                f"gradle.wrapper.version.{gradle_version[0]}.{gradle_version[1]}"
+            )
+    declared_toolchain: int | None = None
+    for build_name in ("build.gradle", "build.gradle.kts"):
+        build_file = root / build_name
+        if not build_file.is_file():
+            continue
+        try:
+            build_text = build_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        toolchain_match = re.search(
+            r"JavaLanguageVersion\s*\.\s*of\s*\(\s*(\d{1,2})\s*\)",
+            build_text,
+        )
+        if toolchain_match:
+            declared_toolchain = int(toolchain_match.group(1))
+            break
+    gradle_warnings: list[str] = []
+    if declared_toolchain in {17, 21, 25}:
+        java_major = declared_toolchain
+        evidence.append(f"toolchain.java.{declared_toolchain}")
+    elif declared_toolchain is not None:
+        gradle_warnings.append(
+            f"Gradle declares Java toolchain {declared_toolchain}, but the "
+            "automatic baseline has no matching multi-architecture runtime; "
+            "use .gh-freshclone.toml for an explicit image."
+        )
+    evidence.append(f"runtime.java.{java_major}")
+    return (
+        _step(
+            root,
+            "gradle",
+            f"docker.io/library/gradle:jdk{java_major}-noble",
+            f"{base} --offline {lifecycle}",
+            evidence,
+            prepare_command=prepare_command,
+        ),
+        gradle_warnings,
+    )
+
+
 def _cargo_workspace_owns(root: Path, manifest: Path) -> bool:
     cargo = _read_toml(root / "Cargo.toml")
     workspace = cargo.get("workspace")
@@ -907,17 +1085,32 @@ def detect_plan(
     node, node_warnings = _detect_node(root, profile)
     python, python_warnings = _detect_python(root, profile)
     go = _detect_go(root)
-    for step in (rust, node, python, go):
+    maven = _detect_maven(root, profile)
+    gradle, gradle_warnings = _detect_gradle(root, profile)
+    if maven and gradle and profile != "full":
+        if (root / "mvnw").is_file():
+            selected_java = "Maven"
+            gradle = None
+        else:
+            selected_java = "Gradle"
+            maven = None
+        warnings.append(
+            f"Both Maven and Gradle baselines were found; profile {profile!r} "
+            f"selects {selected_java}, while profile 'full' runs both."
+        )
+    for step in (rust, node, python, go, maven, gradle):
         if step:
             steps.append(step)
     warnings.extend(rust_warnings)
     warnings.extend(node_warnings)
     warnings.extend(python_warnings)
+    warnings.extend(gradle_warnings)
 
     if not steps:
         warnings.append(
             "No supported root-level baseline was found. "
-            "Automatic support covers Python, Node.js/Bun/Deno, Rust, and Go; "
+            "Automatic support covers Python, Node.js/Bun/Deno, Rust, Go, "
+            "Maven, and Gradle; "
             "use .gh-freshclone.toml for an explicit layout."
         )
     root_markers = {
@@ -926,6 +1119,9 @@ def detect_plan(
         "pyproject.toml",
         "requirements.txt",
         "go.mod",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
     }
     nested = sorted(
         {

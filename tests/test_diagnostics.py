@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gh_freshclone.diagnostics import diagnose_failure
+from gh_freshclone.diagnostics import diagnose_failure, is_diagnostic_output
 
 
 def test_missing_executable_has_structured_package_hint() -> None:
@@ -52,6 +52,100 @@ def test_deno_dns_failure_under_offline_policy_is_an_environment_gap() -> None:
 
     assert status == "environment_gap"
     assert diagnostics[0].kind == "network_policy"
+
+
+def test_gradle_offline_runtime_dependency_is_an_environment_gap() -> None:
+    status, diagnostics = diagnose_failure(
+        1,
+        (
+            "Could not resolve org.junit.platform:junit-platform-launcher:6.1.2.\n"
+            "No cached version available for offline mode."
+        ),
+        test_network="none",
+        failed_phase="test",
+    )
+
+    assert status == "environment_gap"
+    assert diagnostics[0].kind == "network_policy"
+
+
+def test_gradle_testkit_distribution_download_is_an_environment_gap() -> None:
+    detail = (
+        "Could not install Gradle distribution from "
+        "'https://services.gradle.org/distributions/gradle-9.0.0-bin.zip'.\n"
+        "Caused by: java.net.UnknownHostException: services.gradle.org"
+    )
+
+    assert is_diagnostic_output(detail)
+    status, diagnostics = diagnose_failure(
+        1,
+        detail,
+        test_network="none",
+        failed_phase="test",
+    )
+
+    assert status == "environment_gap"
+    assert diagnostics[0].kind == "network_policy"
+
+
+def test_offline_external_content_lookup_is_an_environment_gap() -> None:
+    status, diagnostics = diagnose_failure(
+        1,
+        (
+            "We could not parse the content at "
+            "https://download.example.invalid/p2.index\n"
+            "The build is running offline."
+        ),
+        test_network="none",
+        failed_phase="test",
+    )
+
+    assert status == "environment_gap"
+    assert diagnostics[0].kind == "network_policy"
+
+
+def test_external_terms_are_never_accepted_automatically() -> None:
+    status, diagnostics = diagnose_failure(
+        1,
+        "The Gradle Terms of Use have not been agreed to.",
+        test_network="enabled",
+        failed_phase="prepare",
+    )
+
+    assert status == "environment_gap"
+    assert diagnostics[0].kind == "external_agreement_required"
+    assert "will not accept automatically" in diagnostics[0].message
+
+
+def test_missing_gradle_java_toolchain_is_an_environment_gap() -> None:
+    detail = (
+        "Cannot find a Java installation on your machine matching: "
+        "{languageVersion=17}. "
+        "Toolchain download repositories have not been configured."
+    )
+
+    assert is_diagnostic_output(detail)
+    status, diagnostics = diagnose_failure(
+        1,
+        detail,
+        test_network="enabled",
+        failed_phase="prepare",
+    )
+
+    assert status == "environment_gap"
+    assert diagnostics[0].kind == "missing_java_toolchain"
+
+
+def test_prepare_unknown_host_is_infrastructure_failure() -> None:
+    status, diagnostics = diagnose_failure(
+        1,
+        "java.net.UnknownHostException: repo.maven.apache.org",
+        test_network="enabled",
+        failed_phase="prepare",
+    )
+
+    assert status == "infra_failure"
+    assert diagnostics[0].kind == "dependency_preparation_infrastructure"
 
 
 def test_missing_shared_library_has_structured_package_hint() -> None:

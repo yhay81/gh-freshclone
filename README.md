@@ -12,9 +12,9 @@ the plan without host credentials in an OCI container, and writes a reusable
 JSON receipt. It distinguishes repository test failures from runner failures
 and missing environment capabilities.
 
-Automatic detection covers root-level Python, Node.js/Bun/Deno, Rust, and Go
-projects. A repository-owned configuration compiles explicit monorepo steps.
-The package is alpha software.
+Automatic detection covers root-level Python, Node.js/Bun/Deno, Rust, Go,
+Maven, and Gradle projects. A repository-owned configuration compiles explicit
+monorepo steps. The package is alpha software.
 
 ## Why it exists
 
@@ -56,7 +56,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.8.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.9.0"
 gh-freshclone doctor
 ```
 
@@ -216,6 +216,10 @@ initialization failures as a JSON error envelope on standard output:
 - Lockfiles and relevant manifests form a dependency fingerprint.
 - Go reuses module and build caches but compiles `go test -count=1`, so a
   fresh proof cannot silently reuse a previous successful test result.
+- Maven and Gradle reuse repository-, image-, and dependency-scoped download
+  caches. Dependencies are prepared with network access, then the lifecycle is
+  rerun from a fresh read-only checkout with Maven offline mode or Gradle
+  `--offline` in a network-disabled container.
 - Canonical CPU and memory limits are recorded in receipt v6 and participate
   in receipt and PASS-index identity; a proof produced at `2 CPU / 4g` is
   never reused for an `8g` request.
@@ -269,9 +273,12 @@ p95 because local Git metadata and commit resolution use one process. CI
 fails if the same clone-free path exceeds 250 ms p95 on its Linux runner.
 These are development measurements, not cross-platform guarantees.
 
-A six-ecosystem public-repository trial, including the defects discovered
-during real execution and the measured cold/warm results, is recorded in
+A public-repository trial across eight automatic ecosystems, including the
+defects discovered during real execution and measured cold/warm results, is recorded in
 [`docs/field-trial-2026-07-25.md`](docs/field-trial-2026-07-25.md).
+On the final dual-build Java target, verified dependency reuse reduced an
+otherwise fresh end-to-end Maven-plus-Gradle proof from 897.90 to 318.27
+seconds while rerunning both offline lifecycles.
 
 A fresh probe of public pull request
 [`pallets/itsdangerous#428`](https://github.com/pallets/itsdangerous/pull/428)
@@ -440,6 +447,12 @@ Current evidence sources include:
 - Rust: `Cargo.toml` and `rust-toolchain.toml`
 - Go: `go.mod`, using its explicit `toolchain` when present and a refreshed
   stable image otherwise
+- Maven: `pom.xml`, an optional committed `mvnw`, and wrapper configuration;
+  `test` is the default lifecycle and `full` compiles `verify`
+- Gradle: committed build files plus a committed `gradlew`; wrapper
+  compatibility and literal Java 17/21/25 toolchain declarations select a
+  multi-architecture official Gradle image, while unwrapped builds are never
+  auto-run
 
 Cargo members declared by a root workspace are covered by its
 `cargo test --workspace` step. Other nested manifests are reported as not
