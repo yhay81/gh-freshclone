@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -8,9 +9,10 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
+from .configuration import CONFIG_NAME
 from .model import Repository
 from .process import CommandError, run
 
@@ -21,6 +23,14 @@ _GITHUB_SSH_URL = re.compile(
     re.IGNORECASE,
 )
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
 
 
 class RepositoryError(RuntimeError):
@@ -402,10 +412,10 @@ def _materialize_remote(
         )
 
 
-def materialize(repository: Repository, destination: Path) -> None:
-    """Create a credential-free checkout pinned to ``repository.commit_sha``."""
-
-    _require("git")
+def _validate_materialization(
+    repository: Repository,
+    destination: Path,
+) -> None:
     if destination.exists():
         raise RepositoryError(f"checkout destination already exists: {destination}")
     if repository.is_private:
@@ -416,26 +426,388 @@ def materialize(repository: Repository, destination: Path) -> None:
     if not repository.local_path and not repository.github_repository:
         raise RepositoryError("repository has no materializable source")
 
+
+def _initialize_materialization(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+) -> None:
+    if repository.local_path:
+        run(
+            [
+                "git",
+                "clone",
+                "--quiet",
+                "--no-hardlinks",
+                "--no-checkout",
+                "--template=",
+                "--",
+                repository.local_path,
+                str(destination),
+            ],
+            env=environment,
+        )
+    else:
+        _materialize_remote(repository, destination, environment)
+    if repository.local_path and not _commit_exists(
+        destination,
+        repository.commit_sha,
+        environment,
+    ):
+        raise RepositoryError(
+            f"resolved commit is no longer available: {repository.display_name}"
+        )
+
+
+def _checkout_complete(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+) -> None:
+    run(
+        [
+            "git",
+            "-C",
+            str(destination),
+            "checkout",
+            "--quiet",
+            "--detach",
+            "--force",
+            repository.commit_sha,
+        ],
+        env=environment,
+    )
+
+
+def _tree_paths(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+) -> tuple[str, ...]:
+    from .detect import AUTOMATIC_PLAN_INPUT_FILES, NESTED_MANIFEST_NAMES
+
+    output = run(
+        [
+            "git",
+            "-C",
+            str(destination),
+            "ls-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            repository.commit_sha,
+        ],
+        env=environment,
+    ).stdout
+    selected: list[str] = []
+    for value in output.split("\0"):
+        if not value:
+            continue
+        path = PurePosixPath(value)
+        if value in AUTOMATIC_PLAN_INPUT_FILES or (
+            len(path.parts) == 3 and path.name in NESTED_MANIFEST_NAMES
+        ):
+            selected.append(value)
+    return tuple(selected)
+
+
+def _portable_checkout_path(value: str) -> PurePosixPath | None:
+    if (
+        not value
+        or len(value) > (180 if os.name == "nt" else 4096)
+        or "\\" in value
+        or "\ufffd" in value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        return None
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return None
+    for part in path.parts:
+        if len(part.encode("utf-8")) > 255:
+            return None
+        if os.name == "nt" and (
+            part.endswith((" ", "."))
+            or any(character in '<>:"|?*' for character in part)
+            or part.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES
+        ):
+            return None
+    return path
+
+
+def _checkout_paths(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+    paths: tuple[str, ...],
+) -> None:
+    for offset in range(0, len(paths), 64):
+        batch = paths[offset : offset + 64]
+        run(
+            [
+                "git",
+                "-C",
+                str(destination),
+                "checkout",
+                "--quiet",
+                repository.commit_sha,
+                "--",
+                *(f":(top,literal){path}" for path in batch),
+            ],
+            env=environment,
+        )
+
+
+def _normalized_symlink_target(
+    link: PurePosixPath,
+    target: str,
+) -> PurePosixPath | None:
+    if (
+        not target
+        or "\\" in target
+        or PurePosixPath(target).is_absolute()
+        or any(ord(character) < 32 or ord(character) == 127 for character in target)
+    ):
+        return None
+    parts = list(link.parent.parts)
+    for part in PurePosixPath(target).parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+        else:
+            parts.append(part)
+    return _portable_checkout_path(PurePosixPath(*parts).as_posix())
+
+
+def _tree_object_type(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+    path: str,
+) -> str | None:
+    result = run(
+        [
+            "git",
+            "-C",
+            str(destination),
+            "cat-file",
+            "-t",
+            f"{repository.commit_sha}:{path}",
+        ],
+        check=False,
+        env=environment,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _checkout_symlink_targets(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+    paths: tuple[str, ...],
+) -> None:
+    pending = list(paths)
+    seen = set(paths)
+    while pending:
+        value = pending.pop()
+        path = PurePosixPath(value)
+        materialized = destination.joinpath(*path.parts)
+        if not materialized.is_symlink():
+            continue
+        try:
+            target_value = os.readlink(materialized)
+        except OSError:
+            continue
+        target = _normalized_symlink_target(path, target_value)
+        if (
+            target is None
+            or target.as_posix() in seen
+            or _tree_object_type(
+                repository,
+                destination,
+                environment,
+                target.as_posix(),
+            )
+            != "blob"
+        ):
+            continue
+        selected = target.as_posix()
+        seen.add(selected)
+        _checkout_paths(
+            repository,
+            destination,
+            environment,
+            (selected,),
+        )
+        pending.append(selected)
+
+
+def _node_entrypoint_paths(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+) -> tuple[str, ...]:
+    package_path = destination / "package.json"
+    if not package_path.is_file():
+        return ()
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(package, dict):
+        return ()
+    selected: list[str] = []
+    for field in ("main", "module", "types", "typings"):
+        value = package.get(field)
+        if not isinstance(value, str):
+            continue
+        candidate = value.strip().removeprefix("./")
+        path = _portable_checkout_path(candidate)
+        if (
+            path is not None
+            and _tree_object_type(
+                repository,
+                destination,
+                environment,
+                path.as_posix(),
+            )
+            == "blob"
+        ):
+            selected.append(path.as_posix())
+    return tuple(dict.fromkeys(selected))
+
+
+def _materialize_automatic_plan_inputs(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+) -> bool:
+    from .detect import AUTOMATIC_PLAN_INPUT_FILES, NESTED_MANIFEST_NAMES
+
+    tree_paths = _tree_paths(repository, destination, environment)
+    if CONFIG_NAME in tree_paths:
+        return False
+
+    automatic_inputs = set(AUTOMATIC_PLAN_INPUT_FILES)
+    root_files = tuple(
+        path
+        for path in tree_paths
+        if path in automatic_inputs and _portable_checkout_path(path) is not None
+    )
+    _checkout_paths(
+        repository,
+        destination,
+        environment,
+        root_files,
+    )
+    _checkout_symlink_targets(
+        repository,
+        destination,
+        environment,
+        root_files,
+    )
+    entrypoints = _node_entrypoint_paths(
+        repository,
+        destination,
+        environment,
+    )
+    _checkout_paths(
+        repository,
+        destination,
+        environment,
+        entrypoints,
+    )
+    _checkout_symlink_targets(
+        repository,
+        destination,
+        environment,
+        entrypoints,
+    )
+
+    for directory in ("tests", "test"):
+        if (
+            _tree_object_type(
+                repository,
+                destination,
+                environment,
+                directory,
+            )
+            == "tree"
+        ):
+            (destination / directory).mkdir(exist_ok=True)
+
+    seen: set[str] = set()
+    nested_markers: list[str] = []
+    for value in tree_paths:
+        path = _portable_checkout_path(value)
+        if (
+            path is None
+            or len(path.parts) != 3
+            or path.name not in NESTED_MANIFEST_NAMES
+        ):
+            continue
+        collision_key = path.as_posix().casefold() if os.name == "nt" else path.as_posix()
+        if collision_key in seen:
+            continue
+        seen.add(collision_key)
+        nested_markers.append(path.as_posix())
+    _checkout_paths(
+        repository,
+        destination,
+        environment,
+        tuple(nested_markers),
+    )
+    return True
+
+
+def materialize(repository: Repository, destination: Path) -> None:
+    """Create a credential-free checkout pinned to ``repository.commit_sha``."""
+
+    _require("git")
+    _validate_materialization(repository, destination)
     try:
         with _isolated_git_environment(destination.parent) as environment:
-            if repository.local_path:
-                run(
-                    [
-                        "git",
-                        "clone",
-                        "--quiet",
-                        "--no-hardlinks",
-                        "--no-checkout",
-                        "--template=",
-                        "--",
-                        repository.local_path,
-                        str(destination),
-                    ],
-                    env=environment,
-                )
-            else:
-                _materialize_remote(repository, destination, environment)
-            if repository.local_path and not _commit_exists(
+            _initialize_materialization(repository, destination, environment)
+            _checkout_complete(repository, destination, environment)
+    except CommandError as exc:
+        raise RepositoryError(f"failed to check out {repository.display_name}") from exc
+
+
+def materialize_plan_inputs(repository: Repository, destination: Path) -> None:
+    """Materialize only committed files needed for deterministic plan detection."""
+
+    _require("git")
+    _validate_materialization(repository, destination)
+    try:
+        with _isolated_git_environment(destination.parent) as environment:
+            _initialize_materialization(repository, destination, environment)
+            if not _materialize_automatic_plan_inputs(
+                repository,
+                destination,
+                environment,
+            ):
+                _checkout_complete(repository, destination, environment)
+    except CommandError as exc:
+        raise RepositoryError(
+            f"failed to inspect committed plan inputs for {repository.display_name}"
+        ) from exc
+
+
+def complete_materialization(
+    repository: Repository,
+    destination: Path,
+) -> None:
+    """Expand a plan-only checkout to the complete immutable worktree."""
+
+    _require("git")
+    if not destination.is_dir():
+        raise RepositoryError(f"checkout destination does not exist: {destination}")
+    try:
+        with _isolated_git_environment(destination.parent) as environment:
+            if not _commit_exists(
                 destination,
                 repository.commit_sha,
                 environment,
@@ -443,17 +815,6 @@ def materialize(repository: Repository, destination: Path) -> None:
                 raise RepositoryError(
                     f"resolved commit is no longer available: {repository.display_name}"
                 )
-            run(
-                [
-                    "git",
-                    "-C",
-                    str(destination),
-                    "checkout",
-                    "--quiet",
-                    "--detach",
-                    repository.commit_sha,
-                ],
-                env=environment,
-            )
+            _checkout_complete(repository, destination, environment)
     except CommandError as exc:
         raise RepositoryError(f"failed to check out {repository.display_name}") from exc

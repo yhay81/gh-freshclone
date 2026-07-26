@@ -6,6 +6,19 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.10.0
+
+- Compile automatic plans from Git tree metadata and only the committed
+  detector inputs, without hydrating source and test bodies. Expand the same
+  exact-SHA checkout only after `check` finds an executable baseline; explicit
+  `.gh-freshclone.toml` layouts retain complete-checkout semantics.
+- Avoid Windows checkout failures caused by unrelated NTFS-incompatible paths
+  while planning. Unsupported repositories now return ordinary no-baseline
+  evidence instead of an initialization error.
+- Reduce real cold plan time for `dotnet/runtime` from 106.77 seconds to 2.67
+  seconds in the Windows field trial, while preserving Python, Node.js, Rust,
+  Go, Maven, and Gradle detection behavior.
+
 ## 0.9.0
 
 - Add conservative Maven and Gradle automatic baselines. Both prepare

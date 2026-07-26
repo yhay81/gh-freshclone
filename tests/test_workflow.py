@@ -94,14 +94,17 @@ def test_check_writes_and_reuses_passing_receipt(
         "gh_freshclone.workflow.select_runner",
         lambda requested: "docker",
     )
-    original_materialize = workflow.materialize
+    original_materialize = workflow.materialize_plan_inputs
     materializations: list[Path] = []
 
     def tracking_materialize(repository, destination):
         materializations.append(destination)
         original_materialize(repository, destination)
 
-    monkeypatch.setattr("gh_freshclone.workflow.materialize", tracking_materialize)
+    monkeypatch.setattr(
+        "gh_freshclone.workflow.materialize_plan_inputs",
+        tracking_materialize,
+    )
     calls: list[Path] = []
 
     def fake_run_step(runner, step, workspace, log_path, **kwargs):
@@ -187,11 +190,39 @@ def test_cache_miss_rejects_stopped_runner_before_clone(
     monkeypatch.setattr(workflow, "select_runner", stopped_runner)
     monkeypatch.setattr(
         workflow,
-        "materialize",
+        "materialize_plan_inputs",
         lambda *args, **kwargs: pytest.fail("clone must not start"),
     )
 
     with pytest.raises(RunnerError, match="no installed OCI runner is ready"):
+        check_repository(str(git_repository), use_cache=False, echo=False)
+
+
+def test_check_does_not_expand_repository_without_an_executable_plan(
+    monkeypatch,
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(
+        workflow,
+        "select_runner",
+        lambda requested: "docker",
+    )
+    repository = workflow.resolve_repository(str(git_repository))
+    monkeypatch.setattr(
+        "gh_freshclone.detect.detect_plan",
+        lambda *args, **kwargs: BaselinePlan(repository=repository, steps=()),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "complete_materialization",
+        lambda *args, **kwargs: pytest.fail(
+            "unsupported repositories must not be fully expanded"
+        ),
+    )
+
+    with pytest.raises(workflow.WorkflowError, match="no executable baseline"):
         check_repository(str(git_repository), use_cache=False, echo=False)
 
 
@@ -337,18 +368,22 @@ def test_docker_reuses_readonly_checkout_without_host_copy(
         "gh_freshclone.workflow.select_runner",
         lambda requested: "docker",
     )
-    original_materialize = workflow.materialize
+    original_materialize = workflow.materialize_plan_inputs
     canonical_checkout: list[Path] = []
 
     def tracking_materialize(repository, destination):
         canonical_checkout.append(destination)
         original_materialize(repository, destination)
 
-    monkeypatch.setattr("gh_freshclone.workflow.materialize", tracking_materialize)
+    monkeypatch.setattr(
+        "gh_freshclone.workflow.materialize_plan_inputs",
+        tracking_materialize,
+    )
 
     def fake_run_step(runner, step, workspace, log_path, **kwargs):
         assert workspace == canonical_checkout[0]
         assert (workspace / ".git").is_dir()
+        assert (workspace / "tests" / "test_sample.py").is_file()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text("ok\n", encoding="utf-8")
         return RunnerExecution(0, 0.1, "ok")

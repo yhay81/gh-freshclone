@@ -54,6 +54,18 @@ def materialize(repository: Repository, destination: Path) -> None:
     implementation(repository, destination)
 
 
+def materialize_plan_inputs(repository: Repository, destination: Path) -> None:
+    from .github import materialize_plan_inputs as implementation
+
+    implementation(repository, destination)
+
+
+def complete_materialization(repository: Repository, destination: Path) -> None:
+    from .github import complete_materialization as implementation
+
+    implementation(repository, destination)
+
+
 def run_step(*args: Any, **kwargs: Any) -> RunnerExecution:
     from .runners import run_step as implementation
 
@@ -75,7 +87,7 @@ def create_plan(
         ignore_cleanup_errors=True,
     ) as temporary:
         checkout = Path(temporary) / "source"
-        materialize(repository, checkout)
+        materialize_plan_inputs(repository, checkout)
         return _apply_test_network_policy(
             detect_plan(repository, checkout, profile),
             test_network,
@@ -230,7 +242,7 @@ def _check_resolved_repository(
     ) as temporary, ExitStack() as evidence_locks:
         temporary_root = Path(temporary)
         checkout = temporary_root / "source"
-        materialize(repository, checkout)
+        materialize_plan_inputs(repository, checkout)
         plan = _apply_test_network_policy(
             detect_plan(repository, checkout, profile),
             test_network,
@@ -250,6 +262,7 @@ def _check_resolved_repository(
             return cached, destination, True
 
         evidence_locks.enter_context(cache_path_lock(destination))
+        complete_materialization(repository, checkout)
         results: list[StepResult] = []
         last_execution: RunnerExecution | None = None
         prepared_volumes_changed = False

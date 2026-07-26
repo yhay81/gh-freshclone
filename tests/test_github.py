@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -7,7 +8,9 @@ import pytest
 
 from gh_freshclone import github
 from gh_freshclone.github import (
+    complete_materialization,
     materialize,
+    materialize_plan_inputs,
     parse_github_repository,
     parse_github_target,
     resolve_repository,
@@ -73,6 +76,196 @@ def test_resolve_and_materialize_local_commit(
         text=True,
     ).stdout.strip()
     assert actual == expected
+
+
+def test_plan_materialization_expands_only_after_detection(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    repository = resolve_repository(str(git_repository))
+    checkout = tmp_path / "checkout"
+
+    materialize_plan_inputs(repository, checkout)
+
+    assert (checkout / "pyproject.toml").is_file()
+    assert (checkout / "tests").is_dir()
+    assert not (checkout / "tests" / "test_sample.py").exists()
+
+    complete_materialization(repository, checkout)
+
+    assert (checkout / "tests" / "test_sample.py").is_file()
+    actual = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert actual == repository.commit_sha
+
+
+def test_plan_materialization_preserves_configured_layouts(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    configured_source = git_repository / "custom" / "source.txt"
+    configured_source.parent.mkdir()
+    configured_source.write_text("committed source\n", encoding="utf-8")
+    (git_repository / ".gh-freshclone.toml").write_text(
+        "version = 1\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "configured layout",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    repository = resolve_repository(str(git_repository))
+    checkout = tmp_path / "checkout"
+
+    materialize_plan_inputs(repository, checkout)
+
+    assert (checkout / ".gh-freshclone.toml").is_file()
+    assert (checkout / "custom" / "source.txt").read_text(encoding="utf-8") == (
+        "committed source\n"
+    )
+
+
+def test_plan_materialization_keeps_nested_manifest_evidence(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    nested = git_repository / "examples" / "demo" / "package.json"
+    nested.parent.mkdir(parents=True)
+    nested.write_text('{"private": true}\n', encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "nested manifest",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    repository = resolve_repository(str(git_repository))
+    checkout = tmp_path / "checkout"
+
+    materialize_plan_inputs(repository, checkout)
+
+    assert (checkout / "examples" / "demo" / "package.json").read_text(
+        encoding="utf-8"
+    ) == '{"private": true}\n'
+    complete_materialization(repository, checkout)
+    assert (checkout / "tests" / "test_sample.py").is_file()
+
+
+def test_plan_materialization_keeps_declared_node_entrypoints(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    (git_repository / "package.json").write_text(
+        '{"main":"dist/index.js","scripts":{"test":"node test.js",'
+        '"build":"node build.js"}}\n',
+        encoding="utf-8",
+    )
+    entrypoint = git_repository / "dist" / "index.js"
+    entrypoint.parent.mkdir()
+    entrypoint.write_text("export default 1;\n", encoding="utf-8")
+    (git_repository / "unrelated.js").write_text("secret = 1;\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "node entrypoint",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    repository = resolve_repository(str(git_repository))
+    checkout = tmp_path / "checkout"
+
+    materialize_plan_inputs(repository, checkout)
+
+    assert (checkout / "dist" / "index.js").is_file()
+    assert not (checkout / "unrelated.js").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Git stores symlinks as files on Windows")
+def test_plan_materialization_follows_committed_input_symlinks(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    target = git_repository / "config" / "project.toml"
+    target.parent.mkdir()
+    (git_repository / "pyproject.toml").replace(target)
+    (git_repository / "pyproject.toml").symlink_to("config/project.toml")
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "-A"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "symlinked manifest",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    repository = resolve_repository(str(git_repository))
+    checkout = tmp_path / "checkout"
+
+    materialize_plan_inputs(repository, checkout)
+
+    assert (checkout / "pyproject.toml").is_symlink()
+    assert (checkout / "config" / "project.toml").is_file()
 
 
 def test_materialization_uses_sanitized_git_configuration(
@@ -369,7 +562,7 @@ def test_public_materialization_ref_move_falls_back_to_exact_commit(
         repository.commit_sha,
     ]
     assert all("--depth=1" in command for command in fetches)
-    assert commands[-1][-2:] == ("--detach", repository.commit_sha)
+    assert commands[-1][-3:] == ("--detach", "--force", repository.commit_sha)
 
 
 def test_public_materialization_exact_sha_fetches_once(
