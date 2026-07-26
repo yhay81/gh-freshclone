@@ -262,6 +262,16 @@ def _cache_environment(
             "PIP_CACHE_DIR=/prepared/pip",
             "PYTHONPATH=/prepared/tools",
         ) if prepared_volume else ()
+    if ecosystem == "dotnet":
+        root = "/prepared" if prepared_volume else "/cache"
+        return (
+            f"NUGET_PACKAGES={root}/nuget",
+            f"DOTNET_CLI_HOME={root}/home",
+            "NUGET_XMLDOC_MODE=skip",
+            "DOTNET_CLI_TELEMETRY_OPTOUT=1",
+            "DOTNET_NOLOGO=1",
+            "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1",
+        )
     return ()
 
 
@@ -291,7 +301,7 @@ def _prepare_marker_paths(
         return tuple(markers)
     if effective_volume and step.ecosystem in {"maven", "gradle"}:
         return (f"/cache/{_PREPARE_MARKER}",)
-    if effective_volume and step.ecosystem == "cmake":
+    if effective_volume and step.ecosystem in {"cmake", "dotnet"}:
         return (f"/prepared/{_PREPARE_MARKER}",)
     if effective_cache and step.ecosystem in {
         "deno",
@@ -392,6 +402,7 @@ def build_runner_command(
                     "maven",
                     "gradle",
                     "cmake",
+                    "dotnet",
                 }
                 and prepared_volume
             )
@@ -461,7 +472,12 @@ def build_runner_command(
             command.append(
                 f"--mount=type=bind,source={resolved_cache},target=/cache"
             )
-        if prepared_volume and step.ecosystem in {"python", "deno", "cmake"}:
+        if prepared_volume and step.ecosystem in {
+            "python",
+            "deno",
+            "cmake",
+            "dotnet",
+        }:
             command.append(
                 f"--mount=type=volume,source={prepared_volume},target=/prepared"
             )
@@ -519,7 +535,12 @@ def build_runner_command(
             command.extend(("--env", value))
         if resolved_cache:
             command.extend(("--volume", f"{resolved_cache}:/cache"))
-        if prepared_volume and step.ecosystem in {"python", "deno", "cmake"}:
+        if prepared_volume and step.ecosystem in {
+            "python",
+            "deno",
+            "cmake",
+            "dotnet",
+        }:
             command.extend(("--volume", f"{prepared_volume}:/prepared"))
         elif prepared_volume and step.ecosystem in {"node", "bun"}:
             command.extend(
@@ -935,6 +956,7 @@ def run_step(
         "maven",
         "gradle",
         "cmake",
+        "dotnet",
     }
     effective_volume = (
         f"{prepared_volume}-i{image_key}"

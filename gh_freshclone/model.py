@@ -6,9 +6,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
-PLAN_VERSION = 7
+PLAN_VERSION = 8
 RECEIPT_VERSION = 6
-EXECUTION_POLICY_VERSION = 16
+EXECUTION_POLICY_VERSION = 17
 _MEMORY_LIMIT = re.compile(
     r"[1-9]\d*(?:\.\d+)?(?:[bkmg]i?b?|b)?",
     re.IGNORECASE,

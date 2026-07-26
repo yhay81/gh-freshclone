@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import configparser
 import hashlib
+import html
 import json
 import re
 import shlex
@@ -15,12 +16,14 @@ from .model import BaselinePlan, CheckStep, Repository
 
 DEFAULT_PYTHON_MINOR = 13
 DEFAULT_NODE_MAJOR = 24
+DEFAULT_DOTNET_MAJOR = 10
 BOOTSTRAP_UV_VERSION = "0.11.32"
 BOOTSTRAP_BUN_VERSION = "1.3.14"
 BOOTSTRAP_CMAKE_VERSION = "3.31.10"
 BOOTSTRAP_NINJA_VERSION = "1.13.0"
 MAVEN_IMAGE = "docker.io/library/maven:3.9-eclipse-temurin-21"
 CMAKE_IMAGE = "docker.io/library/python:3.13-bookworm"
+SUPPORTED_DOTNET_MAJORS = frozenset({8, 9, 10})
 _CMAKE_TEST_OPTION = re.compile(
     r"(?:^|_)(?:BUILD_?TESTS?|TESTS?)$",
     re.IGNORECASE,
@@ -89,6 +92,15 @@ _DEPENDENCY_FILES = {
         "conanfile.txt",
         "conanfile.py",
     ),
+    "dotnet": (
+        "global.json",
+        "Directory.Build.props",
+        "Directory.Build.targets",
+        "Directory.Packages.props",
+        "NuGet.Config",
+        "NuGet.config",
+        "nuget.config",
+    ),
 }
 _ROOT_INPUT_FILES = {
     CONFIG_NAME,
@@ -98,6 +110,7 @@ _ROOT_INPUT_FILES = {
     *(name for names in _DEPENDENCY_FILES.values() for name in names),
 }
 AUTOMATIC_PLAN_INPUT_FILES = frozenset(_ROOT_INPUT_FILES)
+AUTOMATIC_PLAN_INPUT_SUFFIXES = frozenset({".sln", ".slnx"})
 NESTED_MANIFEST_NAMES = frozenset(
     {
         "Cargo.toml",
@@ -120,25 +133,61 @@ class _Digest(Protocol):
 
 def _reject_escaping_root_inputs(root: Path) -> None:
     resolved_root = root.resolve()
-    for name in _ROOT_INPUT_FILES:
-        path = root / name
+    candidates = [
+        *(root / name for name in _ROOT_INPUT_FILES),
+        *(path for pattern in ("*.sln", "*.slnx") for path in root.glob(pattern)),
+    ]
+    validated_solutions: list[Path] = []
+    for path in candidates:
         if not path.exists() and not path.is_symlink():
             continue
         try:
             resolved = path.resolve(strict=True)
         except OSError as exc:
-            raise ValueError(f"cannot resolve repository input {name}: {exc}") from exc
+            raise ValueError(
+                f"cannot resolve repository input {path.relative_to(root)}: {exc}"
+            ) from exc
         if not resolved.is_relative_to(resolved_root):
-            raise ValueError(f"repository input escapes the checkout: {name}")
+            raise ValueError(
+                f"repository input escapes the checkout: {path.relative_to(root)}"
+            )
+        if path.suffix.casefold() in AUTOMATIC_PLAN_INPUT_SUFFIXES:
+            validated_solutions.append(path)
+    for solution in validated_solutions:
+        for value in _dotnet_solution_projects(solution):
+            project = root.joinpath(*PurePosixPath(value).parts)
+            if not project.exists() and not project.is_symlink():
+                continue
+            try:
+                resolved = project.resolve(strict=True)
+            except OSError as exc:
+                raise ValueError(
+                    f"cannot resolve repository input {value}: {exc}"
+                ) from exc
+            if not resolved.is_relative_to(resolved_root):
+                raise ValueError(f"repository input escapes the checkout: {value}")
 
 
-def _dependency_fingerprint(root: Path, ecosystem: str, image: str) -> str:
+def _dependency_fingerprint(
+    root: Path,
+    ecosystem: str,
+    image: str,
+    extra_files: tuple[str, ...] = (),
+) -> str:
     digest = hashlib.sha256()
     digest.update(b"gh-freshclone-dependencies-v1\0")
     digest.update(ecosystem.encode())
     digest.update(b"\0")
     digest.update(image.encode())
-    for name in _DEPENDENCY_FILES.get(ecosystem, ()):
+    names = list(_DEPENDENCY_FILES.get(ecosystem, ()))
+    if ecosystem == "dotnet":
+        names.extend(
+            path.name
+            for pattern in ("*.sln", "*.slnx")
+            for path in sorted(root.glob(pattern), key=lambda item: item.name.casefold())
+        )
+    names.extend(extra_files)
+    for name in dict.fromkeys(names):
         path = root / name
         if not path.is_file():
             continue
@@ -249,13 +298,19 @@ def _step(
     *,
     prepare_command: str = "",
     test_network: str = "none",
+    dependency_files: tuple[str, ...] = (),
 ) -> CheckStep:
     return CheckStep(
         ecosystem=ecosystem,
         image=image,
         command=command,
         evidence=tuple(evidence),
-        dependency_fingerprint=_dependency_fingerprint(root, ecosystem, image),
+        dependency_fingerprint=_dependency_fingerprint(
+            root,
+            ecosystem,
+            image,
+            dependency_files,
+        ),
         prepare_command=prepare_command,
         test_network=test_network,
     )
@@ -1229,6 +1284,243 @@ def _detect_cmake(
     )
 
 
+def _dotnet_solution_projects(path: Path) -> tuple[str, ...]:
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return ()
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    values: list[str] = []
+    if path.suffix.casefold() == ".slnx":
+        values.extend(
+            html.unescape(match.group(2))
+            for match in re.finditer(
+                r"<Project\b[^>]*\bPath\s*=\s*([\"'])(.*?)\1",
+                text,
+                re.IGNORECASE,
+            )
+        )
+    else:
+        values.extend(
+            match.group(1)
+            for match in re.finditer(
+                r'(?im)^Project\("[^"]+"\)\s*=\s*"[^"]+",\s*"([^"]+\.(?:cs|fs|vb)proj)"',
+                text,
+            )
+        )
+    projects: list[str] = []
+    for value in values:
+        candidate = value.strip().replace("\\", "/")
+        project = PurePosixPath(candidate)
+        if (
+            not candidate
+            or project.is_absolute()
+            or ".." in project.parts
+            or project.suffix.casefold() not in {".csproj", ".fsproj", ".vbproj"}
+        ):
+            continue
+        projects.append(project.as_posix())
+    return tuple(dict.fromkeys(projects))
+
+
+def _ordinary_dotnet_test_project(path: str) -> bool:
+    stem = PurePosixPath(path).stem.casefold()
+    excluded_suffixes = (
+        "aottest",
+        "benchmark",
+        "benchmarks",
+        "conformance",
+        "example",
+        "examples",
+        "functional",
+        "functionaltests",
+        "integration",
+        "integrationtests",
+        "performance",
+        "performancetests",
+        "sample",
+        "samples",
+        "testapp",
+        "testdummies",
+        "testing",
+        "testutils",
+    )
+    excluded_directories = {
+        "bench",
+        "benchmark",
+        "benchmarks",
+        "conformance",
+        "examples",
+        "integration",
+        "performance",
+        "samples",
+    }
+    if stem.endswith(excluded_suffixes) or any(
+        part.casefold() in excluded_directories
+        for part in PurePosixPath(path).parent.parts
+    ):
+        return False
+    return stem.endswith((".tests", "tests", ".specs", "specs"))
+
+
+def _dotnet_test_rank(path: str) -> tuple[int, int, str]:
+    stem = PurePosixPath(path).stem.casefold()
+    if "unittest" in stem or ".core.tests" in stem:
+        group = 0
+    elif stem.endswith(".tests"):
+        group = 1
+    elif stem.endswith("tests"):
+        group = 2
+    else:
+        group = 3
+    return group, len(path), path.casefold()
+
+
+def _dotnet_target_framework(path: Path, sdk_major: int) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return None
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    frameworks: list[str] = []
+    for match in re.finditer(
+        r"<(TargetFrameworks?)\b[^>]*>([^<]*)</\1\s*>",
+        text,
+        re.IGNORECASE,
+    ):
+        value_text = match.group(2)
+        frameworks.extend(
+            value.strip()
+            for value in value_text.split(";")
+            if value.strip() and "$(" not in value
+        )
+    target = f"net{sdk_major}.0"
+    return target if target in frameworks else None
+
+
+def _dotnet_image(root: Path) -> tuple[str | None, list[str]]:
+    global_json = root / "global.json"
+    if not global_json.is_file():
+        return f"mcr.microsoft.com/dotnet/sdk:{DEFAULT_DOTNET_MAJOR}.0", []
+    config = _read_json(global_json)
+    sdk = config.get("sdk")
+    sdk = sdk if isinstance(sdk, dict) else {}
+    version = sdk.get("version")
+    match = (
+        re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
+        if isinstance(version, str)
+        else None
+    )
+    if match is None:
+        return None, [
+            (
+                "global.json does not declare a stable three-part .NET SDK version; "
+                "use .gh-freshclone.toml with an explicit image."
+            )
+        ]
+    major = int(match.group(1))
+    if major not in SUPPORTED_DOTNET_MAJORS:
+        supported = ", ".join(str(value) for value in sorted(SUPPORTED_DOTNET_MAJORS))
+        return None, [
+            (
+                f"global.json selects unsupported .NET SDK {version}; automatic "
+                f"images cover supported SDK majors {supported}."
+            )
+        ]
+    roll_forward = sdk.get("rollForward")
+    tag = f"{major}.0" if isinstance(roll_forward, str) else version
+    return f"mcr.microsoft.com/dotnet/sdk:{tag}", []
+
+
+def _detect_dotnet(
+    root: Path,
+    profile: str,
+) -> tuple[CheckStep | None, list[str]]:
+    solutions = sorted(
+        (
+            *root.glob("*.sln"),
+            *root.glob("*.slnx"),
+        ),
+        key=lambda path: path.name.casefold(),
+    )
+    if not solutions:
+        return None, []
+    if len(solutions) != 1:
+        names = ", ".join(path.name for path in solutions[:5])
+        return None, [
+            (
+                "Multiple root .NET solutions were found; use .gh-freshclone.toml "
+                f"to select one explicitly: {names}"
+            )
+        ]
+    solution = solutions[0]
+    projects = _dotnet_solution_projects(solution)
+    ordinary_tests = sorted(
+        (path for path in projects if _ordinary_dotnet_test_project(path)),
+        key=_dotnet_test_rank,
+    )
+    if not ordinary_tests:
+        return None, [
+            (
+                f"{solution.name} has no statically identifiable ordinary unit-test "
+                "project; use .gh-freshclone.toml for an explicit baseline."
+            )
+        ]
+    image, image_warnings = _dotnet_image(root)
+    if image is None:
+        return None, image_warnings
+    image_tag = image.rsplit(":", 1)[-1]
+    sdk_major = int(image_tag.split(".", 1)[0])
+    target = ordinary_tests[0] if profile == "quick" else solution.name
+    quoted_target = shlex.quote(target)
+    evidence = [
+        solution.name,
+        f"solution.project.{target}",
+        f"profile.{profile}",
+    ]
+    if (root / "global.json").is_file():
+        evidence.append("global.json")
+    dependency_files: tuple[str, ...] = ()
+    framework_argument = ""
+    if profile == "quick":
+        project_file = root.joinpath(*PurePosixPath(target).parts)
+        framework = _dotnet_target_framework(project_file, sdk_major)
+        if project_file.is_file():
+            evidence.append(target)
+            dependency_files = (target,)
+        if framework:
+            evidence.append(f"target-framework.{framework}")
+            framework_argument = f" --framework {framework}"
+    restore_snapshot = (
+        "rm -rf /prepared/restore && mkdir -p /prepared/restore && "
+        "find . -type d -name obj -prune "
+        "-exec cp --parents -R -- {} /prepared/restore \\;"
+    )
+    restore_prepared = (
+        "find . -type d -name obj -prune -exec rm -rf -- {} + && "
+        "cp -R /prepared/restore/. ."
+    )
+    return (
+        _step(
+            root,
+            "dotnet",
+            image,
+            (
+                f"{restore_prepared} && "
+                f"dotnet test {quoted_target} --no-restore "
+                f"--configuration Release --nologo{framework_argument}"
+            ),
+            evidence,
+            prepare_command=(
+                f"dotnet restore {quoted_target} --disable-parallel --nologo && "
+                f"{restore_snapshot}"
+            ),
+            dependency_files=dependency_files,
+        ),
+        image_warnings,
+    )
+
+
 def _cargo_workspace_owns(root: Path, manifest: Path) -> bool:
     cargo = _read_toml(root / "Cargo.toml")
     workspace = cargo.get("workspace")
@@ -1272,6 +1564,7 @@ def detect_plan(
     maven = _detect_maven(root, profile)
     gradle, gradle_warnings = _detect_gradle(root, profile)
     cmake, cmake_warnings = _detect_cmake(root, profile)
+    dotnet, dotnet_warnings = _detect_dotnet(root, profile)
     if maven and gradle and profile != "full":
         if (root / "mvnw").is_file():
             selected_java = "Maven"
@@ -1283,7 +1576,7 @@ def detect_plan(
             f"Both Maven and Gradle baselines were found; profile {profile!r} "
             f"selects {selected_java}, while profile 'full' runs both."
         )
-    for step in (rust, node, python, go, maven, gradle, cmake):
+    for step in (rust, node, python, go, maven, gradle, cmake, dotnet):
         if step:
             steps.append(step)
     warnings.extend(rust_warnings)
@@ -1291,12 +1584,13 @@ def detect_plan(
     warnings.extend(python_warnings)
     warnings.extend(gradle_warnings)
     warnings.extend(cmake_warnings)
+    warnings.extend(dotnet_warnings)
 
     if not steps:
         warnings.append(
             "No supported root-level baseline was found. "
             "Automatic support covers Python, Node.js/Bun/Deno, Rust, Go, "
-            "Maven, Gradle, and CMake; "
+            "Maven, Gradle, CMake, and .NET; "
             "use .gh-freshclone.toml for an explicit layout."
         )
     nested = sorted(

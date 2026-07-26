@@ -933,6 +933,178 @@ def test_cmake_dependency_identity_includes_package_manifests(
     assert first != second
 
 
+def test_detects_quick_dotnet_test_from_slnx_without_evaluating_msbuild(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "global.json").write_text(
+        '{"sdk":{"version":"10.0.302","allowPrerelease":false}}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "Sample.slnx").write_text(
+        """
+<Solution>
+  <!-- <Project Path="test/Commented.Tests/Commented.Tests.csproj" /> -->
+  <Project Path="bench/Sample.Benchmarks/Sample.Benchmarks.csproj" />
+  <Project Path="src/Sample.Testing/Sample.Testing.csproj" />
+  <Project Path="test/Sample.IntegrationTests/Sample.IntegrationTests.csproj" />
+  <Project Path="test/Sample.Specs/Sample.Specs.csproj" />
+  <Project Path="test/Sample.Core.Tests/Sample.Core.Tests.csproj" />
+</Solution>
+""".lstrip(),
+        encoding="utf-8",
+    )
+    selected = tmp_path / "test" / "Sample.Core.Tests" / "Sample.Core.Tests.csproj"
+    selected.parent.mkdir(parents=True)
+    selected.write_text(
+        "<Project><PropertyGroup>"
+        "<TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>"
+        "</PropertyGroup></Project>\n",
+        encoding="utf-8",
+    )
+
+    quick = detect_plan(_repository(), tmp_path, profile="quick")
+    full = detect_plan(_repository(), tmp_path, profile="full")
+
+    assert len(quick.steps) == 1
+    step = quick.steps[0]
+    assert step.ecosystem == "dotnet"
+    assert step.image == "mcr.microsoft.com/dotnet/sdk:10.0.302"
+    assert (
+        "dotnet restore test/Sample.Core.Tests/Sample.Core.Tests.csproj "
+        in step.prepare_command
+    )
+    assert "find . -type d -name obj" in step.prepare_command
+    assert "cp --parents -R" in step.prepare_command
+    assert (
+        "dotnet test test/Sample.Core.Tests/Sample.Core.Tests.csproj "
+        "--no-restore --configuration Release --nologo"
+        in step.command
+    )
+    assert step.command.endswith("--framework net10.0")
+    assert "cp -R /prepared/restore/. ." in step.command
+    assert "Sample.IntegrationTests" not in step.command
+    assert "Sample.Benchmarks" not in step.command
+    assert "Commented.Tests" not in step.command
+    assert "solution.project.test/Sample.Core.Tests/Sample.Core.Tests.csproj" in (
+        step.evidence
+    )
+    assert "target-framework.net10.0" in step.evidence
+    assert full.steps[0].command.endswith(
+        "dotnet test Sample.slnx --no-restore --configuration Release --nologo"
+    )
+
+
+def test_dotnet_framework_selection_ignores_only_dynamic_fragments(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Product.sln").write_text(
+        'Project("{FAKE}") = "Tests", "test\\Product.Tests.csproj", "{A}"\n',
+        encoding="utf-8",
+    )
+    project = tmp_path / "test" / "Product.Tests.csproj"
+    project.parent.mkdir()
+    project.write_text(
+        "<Project><PropertyGroup>"
+        "<TargetFrameworks>$(TargetFrameworks);net10.0;net9.0;net8.0"
+        "</TargetFrameworks></PropertyGroup></Project>\n",
+        encoding="utf-8",
+    )
+
+    step = detect_plan(_repository(), tmp_path).steps[0]
+
+    assert step.command.endswith("--framework net10.0")
+
+
+def test_detects_dotnet_solution_and_rolls_forward_declared_sdk(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "global.json").write_text(
+        '{"sdk":{"version":"10.0.100","rollForward":"latestFeature"}}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "Product.sln").write_text(
+        '\ufeffMicrosoft Visual Studio Solution File, Format Version 12.00\n'
+        'Project("{FAKE}") = "Product", "src\\Product\\Product.csproj", "{A}"\n'
+        "EndProject\n"
+        'Project("{FAKE}") = "UnitTests", '
+        '"src\\UnitTests\\Product.UnitTests.csproj", "{B}"\n'
+        "EndProject\n",
+        encoding="utf-8",
+    )
+
+    step = detect_plan(_repository(), tmp_path).steps[0]
+
+    assert step.image == "mcr.microsoft.com/dotnet/sdk:10.0"
+    assert "src/UnitTests/Product.UnitTests.csproj" in step.command
+
+
+def test_dotnet_ambiguous_solution_and_unsupported_sdk_fail_closed(
+    tmp_path: Path,
+) -> None:
+    for name in ("First.sln", "Second.slnx"):
+        (tmp_path / name).write_text("<Solution />\n", encoding="utf-8")
+
+    ambiguous = detect_plan(_repository(), tmp_path)
+
+    assert ambiguous.steps == ()
+    assert any("Multiple root .NET solutions" in item for item in ambiguous.warnings)
+
+    (tmp_path / "Second.slnx").unlink()
+    (tmp_path / "First.sln").write_text(
+        'Project("{FAKE}") = "Tests", "Tests\\Product.Tests.csproj", "{A}"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "global.json").write_text(
+        '{"sdk":{"version":"7.0.410"}}\n',
+        encoding="utf-8",
+    )
+
+    unsupported = detect_plan(_repository(), tmp_path)
+
+    assert unsupported.steps == ()
+    assert any("unsupported .NET SDK 7.0.410" in item for item in unsupported.warnings)
+
+
+def test_dotnet_solution_changes_dependency_identity(tmp_path: Path) -> None:
+    solution = tmp_path / "Product.sln"
+    solution.write_text("first\n", encoding="utf-8")
+    image = "mcr.microsoft.com/dotnet/sdk:10.0"
+
+    first = _dependency_fingerprint(tmp_path, "dotnet", image)
+    solution.write_text("second\n", encoding="utf-8")
+    second = _dependency_fingerprint(tmp_path, "dotnet", image)
+
+    assert first != second
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation is not generally available")
+@pytest.mark.parametrize("escape", ["solution", "project"])
+def test_dotnet_inputs_cannot_escape_checkout(
+    tmp_path: Path,
+    escape: str,
+) -> None:
+    outside = tmp_path.parent / f"outside-{escape}.xml"
+    outside.write_text(
+        '<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework>'
+        "</PropertyGroup></Project>\n",
+        encoding="utf-8",
+    )
+    solution = tmp_path / "Product.slnx"
+    if escape == "solution":
+        solution.symlink_to(outside)
+    else:
+        solution.write_text(
+            '<Solution><Project Path="test/Product.Tests.csproj" /></Solution>\n',
+            encoding="utf-8",
+        )
+        project = tmp_path / "test" / "Product.Tests.csproj"
+        project.parent.mkdir()
+        project.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="escapes the checkout"):
+        detect_plan(_repository(), tmp_path)
+
+
 def test_cargo_workspace_members_are_covered_by_the_root_step(tmp_path: Path) -> None:
     (tmp_path / "Cargo.toml").write_text(
         """

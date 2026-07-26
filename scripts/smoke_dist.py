@@ -7,7 +7,11 @@ import sys
 from gh_freshclone.api import receipt_schema
 from gh_freshclone.github import GitHubTarget, parse_github_target
 from gh_freshclone.github_status import GITHUB_STATUS_VERSION
-from gh_freshclone.model import EXECUTION_POLICY_VERSION, ResourceLimits
+from gh_freshclone.model import (
+    EXECUTION_POLICY_VERSION,
+    PLAN_VERSION,
+    ResourceLimits,
+)
 
 
 def main() -> int:
@@ -23,7 +27,9 @@ def main() -> int:
     schema = receipt_schema()
     if schema["properties"]["receipt_version"]["const"] != 6:
         raise SystemExit("receipt v6 schema is missing from the distribution")
-    if EXECUTION_POLICY_VERSION != 16:
+    if PLAN_VERSION != 8:
+        raise SystemExit("unexpected plan version")
+    if EXECUTION_POLICY_VERSION != 17:
         raise SystemExit("unexpected execution policy version")
     if GITHUB_STATUS_VERSION != 1:
         raise SystemExit("unexpected GitHub status interface version")

@@ -484,7 +484,11 @@ def _tree_paths(
     destination: Path,
     environment: dict[str, str],
 ) -> tuple[str, ...]:
-    from .detect import AUTOMATIC_PLAN_INPUT_FILES, NESTED_MANIFEST_NAMES
+    from .detect import (
+        AUTOMATIC_PLAN_INPUT_FILES,
+        AUTOMATIC_PLAN_INPUT_SUFFIXES,
+        NESTED_MANIFEST_NAMES,
+    )
 
     output = run(
         [
@@ -504,7 +508,13 @@ def _tree_paths(
         if not value:
             continue
         path = PurePosixPath(value)
-        if value in AUTOMATIC_PLAN_INPUT_FILES or (
+        if (
+            value in AUTOMATIC_PLAN_INPUT_FILES
+            or (
+                len(path.parts) == 1
+                and path.suffix.casefold() in AUTOMATIC_PLAN_INPUT_SUFFIXES
+            )
+        ) or (
             len(path.parts) == 3 and path.name in NESTED_MANIFEST_NAMES
         ):
             selected.append(value)
@@ -680,12 +690,60 @@ def _node_entrypoint_paths(
     return tuple(dict.fromkeys(selected))
 
 
+def _dotnet_project_paths(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+) -> tuple[str, ...]:
+    from .detect import _dotnet_solution_projects
+
+    solutions = sorted(
+        (
+            *destination.glob("*.sln"),
+            *destination.glob("*.slnx"),
+        ),
+        key=lambda path: path.name.casefold(),
+    )
+    if len(solutions) != 1:
+        return ()
+    projects = _dotnet_solution_projects(solutions[0])
+    if len(projects) > 256:
+        return ()
+    available = set(
+        run(
+            [
+                "git",
+                "-C",
+                str(destination),
+                "ls-tree",
+                "-r",
+                "-z",
+                "--name-only",
+                repository.commit_sha,
+            ],
+            env=environment,
+        ).stdout.split("\0")
+    )
+    return tuple(
+        project
+        for project in projects
+        if (
+            _portable_checkout_path(project) is not None
+            and project in available
+        )
+    )
+
+
 def _materialize_automatic_plan_inputs(
     repository: Repository,
     destination: Path,
     environment: dict[str, str],
 ) -> bool:
-    from .detect import AUTOMATIC_PLAN_INPUT_FILES, NESTED_MANIFEST_NAMES
+    from .detect import (
+        AUTOMATIC_PLAN_INPUT_FILES,
+        AUTOMATIC_PLAN_INPUT_SUFFIXES,
+        NESTED_MANIFEST_NAMES,
+    )
 
     tree_paths = _tree_paths(repository, destination, environment)
     if CONFIG_NAME in tree_paths:
@@ -695,7 +753,15 @@ def _materialize_automatic_plan_inputs(
     root_files = tuple(
         path
         for path in tree_paths
-        if path in automatic_inputs and _portable_checkout_path(path) is not None
+        if (
+            path in automatic_inputs
+            or (
+                len(PurePosixPath(path).parts) == 1
+                and PurePosixPath(path).suffix.casefold()
+                in AUTOMATIC_PLAN_INPUT_SUFFIXES
+            )
+        )
+        and _portable_checkout_path(path) is not None
     )
     _checkout_paths(
         repository,
@@ -725,6 +791,23 @@ def _materialize_automatic_plan_inputs(
         destination,
         environment,
         entrypoints,
+    )
+    dotnet_projects = _dotnet_project_paths(
+        repository,
+        destination,
+        environment,
+    )
+    _checkout_paths(
+        repository,
+        destination,
+        environment,
+        dotnet_projects,
+    )
+    _checkout_symlink_targets(
+        repository,
+        destination,
+        environment,
+        dotnet_projects,
     )
 
     for directory in ("tests", "test"):
