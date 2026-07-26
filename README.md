@@ -777,8 +777,11 @@ See [CHANGELOG.md](CHANGELOG.md) for release contents.
 ## Support
 
 Use [GitHub Issues](https://github.com/yhay81/gh-freshclone/issues) for bug
-reports and support. Do not include access tokens, private repository content,
-or full logs from private projects. Follow the
+reports and support. Successful checks, safe failures, performance
+observations, and unsupported public repositories are welcome through the
+structured `Field report` form; they are the product's zero-telemetry feedback
+loop. Do not include access tokens, private repository content, or full logs
+from private projects. Follow the
 [security policy](https://github.com/yhay81/gh-freshclone/blob/main/SECURITY.md)
 for vulnerability reports. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
 development gates and non-negotiable execution boundaries.

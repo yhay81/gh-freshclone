@@ -13,7 +13,8 @@ body:
     id: version
     attributes:
       label: gh-freshclone version
-      placeholder: "0.3.1"
+      description: Run `gh-freshclone --version`.
+      placeholder: "0.18.0"
     validations:
       required: true
   - type: dropdown
@@ -38,9 +39,30 @@ body:
     id: target
     attributes:
       label: Public reproducer
-      description: Public OWNER/REPO, commit URL, or pull-request URL if available.
+      description: Public OWNER/REPO plus full commit SHA, or an immutable commit URL, if available.
     validations:
       required: false
+  - type: input
+    id: policy
+    attributes:
+      label: Component, profile, and test-network policy
+      description: Include non-default values and write `default` for all defaults.
+      placeholder: "component=apps/web, profile=quick, test-network=none"
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Reported result
+      options:
+        - PASS
+        - TEST_FAILURE
+        - ENVIRONMENT_GAP
+        - INFRA_FAILURE
+        - No executable plan
+        - Initialization error
+    validations:
+      required: true
   - type: textarea
     id: command
     attributes:
@@ -52,7 +74,7 @@ body:
     id: behavior
     attributes:
       label: Expected and actual behavior
-      description: Include exit code and a minimal redacted diagnostic tail.
+      description: Include exit code, cached state, and a minimal redacted diagnostic tail.
     validations:
       required: true
   - type: textarea

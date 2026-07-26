@@ -1,0 +1,102 @@
+name: Field report
+description: Share a real public-repository baseline result and product feedback
+title: "[Field report] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Successful checks, safe failures, and unsupported repositories are all
+        useful. Report only public targets. Do not include tokens, private
+        repository content, credential-bearing remotes, or unrelated personal
+        data.
+  - type: input
+    id: version
+    attributes:
+      label: gh-freshclone version
+      description: Run `gh-freshclone --version`.
+      placeholder: "0.18.0"
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Exact public target
+      description: Public OWNER/REPO plus full commit SHA, or an immutable commit URL.
+      placeholder: "owner/repo@0123456789abcdef0123456789abcdef01234567"
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: Host operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: runner
+    attributes:
+      label: Runner and version
+      description: Paste the relevant redacted entry from `gh-freshclone doctor --json`.
+      placeholder: "Docker 29.x, Podman 5.x, or container 1.x"
+    validations:
+      required: true
+  - type: input
+    id: policy
+    attributes:
+      label: Component, profile, and test-network policy
+      description: Include non-default values and write `default` for all defaults.
+      placeholder: "component=., profile=quick, test-network=none"
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - PASS
+        - TEST_FAILURE
+        - ENVIRONMENT_GAP
+        - INFRA_FAILURE
+        - No executable plan
+    validations:
+      required: true
+  - type: input
+    id: elapsed
+    attributes:
+      label: End-to-end time and cache state
+      description: Use the JSON result when available.
+      placeholder: "16.8 seconds, cached=false, source_cache_hit=true"
+    validations:
+      required: true
+  - type: textarea
+    id: value
+    attributes:
+      label: What was useful?
+      description: What decision did the plan, result, or receipt help you make?
+    validations:
+      required: true
+  - type: textarea
+    id: friction
+    attributes:
+      label: What was confusing or slower than expected?
+      description: Include the desired behavior, even when the check passed.
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Minimal redacted evidence
+      description: Paste only the relevant JSON fields or diagnostic tail.
+      render: json
+    validations:
+      required: false
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I used a public target and removed credentials, private content, and unrelated personal data.
+          required: true
