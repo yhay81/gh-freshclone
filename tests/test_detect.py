@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from gh_freshclone.detect import _dependency_fingerprint, detect_plan
+from gh_freshclone.detect import (
+    BOOTSTRAP_CMAKE_VERSION,
+    BOOTSTRAP_NINJA_VERSION,
+    CMAKE_IMAGE,
+    _dependency_fingerprint,
+    detect_plan,
+)
 from gh_freshclone.model import Repository
 
 
@@ -768,6 +774,161 @@ def test_java_dependency_identity_includes_wrapper_configuration(
     first = _dependency_fingerprint(tmp_path, ecosystem, image)
     properties.write_text("second\n", encoding="utf-8")
     second = _dependency_fingerprint(tmp_path, ecosystem, image)
+
+    assert first != second
+
+
+def test_detects_cmake_with_literal_ctest_enablement(tmp_path: Path) -> None:
+    (tmp_path / "CMakeLists.txt").write_text(
+        """
+cmake_minimum_required(VERSION 3.20)
+project(FreshcloneBaseline LANGUAGES CXX)
+option(FRESHCLONE_BUILD_TESTS "Build tests" OFF)
+option(FRESHCLONE_BUILD_TESTS_CUDA "Build tests with CUDA" OFF)
+include(CTest)
+add_executable(baseline_test test.cpp)
+add_test(NAME baseline COMMAND baseline_test)
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "CMakePresets.json").write_text(
+        '{"version": 3}\n',
+        encoding="utf-8",
+    )
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    assert len(plan.steps) == 1
+    step = plan.steps[0]
+    assert step.ecosystem == "cmake"
+    assert step.image == CMAKE_IMAGE
+    assert "cmake -S . -B .gh-freshclone-build -G Ninja" in step.command
+    assert "-DFETCHCONTENT_BASE_DIR=/prepared/fetchcontent" in step.command
+    assert "-DFETCHCONTENT_FULLY_DISCONNECTED=ON" in step.command
+    assert "-name '*-build' -o -name '*-subbuild'" in step.command
+    assert "-DFRESHCLONE_BUILD_TESTS=ON" in step.command
+    assert "FRESHCLONE_BUILD_TESTS_CUDA=ON" not in step.command
+    assert "ctest --test-dir .gh-freshclone-build" in step.command
+    assert "--no-tests=error" in step.command
+    assert step.test_network == "none"
+    assert (
+        f"cmake=={BOOTSTRAP_CMAKE_VERSION}" in step.prepare_command
+    )
+    assert (
+        f"ninja=={BOOTSTRAP_NINJA_VERSION}" in step.prepare_command
+    )
+    assert "cmake -S . -B /tmp/gh-freshclone-cmake-prepare" in step.prepare_command
+    assert "-DFETCHCONTENT_BASE_DIR=/prepared/fetchcontent" in step.prepare_command
+    assert "FETCHCONTENT_FULLY_DISCONNECTED" not in step.prepare_command
+    assert "-name '*-build' -o -name '*-subbuild'" in step.prepare_command
+    assert f"bootstrap.cmake.{BOOTSTRAP_CMAKE_VERSION}" in step.evidence
+    assert f"bootstrap.ninja.{BOOTSTRAP_NINJA_VERSION}" in step.evidence
+    assert "test-option.FRESHCLONE_BUILD_TESTS" in step.evidence
+    assert "CMakePresets.json" in step.evidence
+
+
+def test_cmake_without_literal_test_signal_is_not_auto_run(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "CMakeLists.txt").write_text(
+        """
+cmake_minimum_required(VERSION 3.20)
+project(NoTests)
+# include(CTest)
+# enable_testing()
+#[=[
+enable_testing()
+]=]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    assert plan.steps == ()
+    assert any("no literal CTest" in warning for warning in plan.warnings)
+    assert any("No supported root-level baseline" in warning for warning in plan.warnings)
+
+
+def test_cmake_newer_than_pinned_runtime_requires_configuration(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "CMakeLists.txt").write_text(
+        """
+cmake_minimum_required(VERSION 4.0)
+project(FutureCMake)
+include(CTest)
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    assert plan.steps == ()
+    assert any(
+        "requires version 4.0" in warning
+        and BOOTSTRAP_CMAKE_VERSION in warning
+        and "explicit image" in warning
+        for warning in plan.warnings
+    )
+
+
+@pytest.mark.parametrize(
+    ("option_text", "expected"),
+    [
+        ('option(FMT_TEST "Generate the test target." OFF)', "FMT_TEST"),
+        (
+            (
+                'option(SPDLOG_BUILD_TESTS "Build tests" OFF)\n'
+                'option(SPDLOG_BUILD_TESTS_HO "Build tests header-only" OFF)'
+            ),
+            "SPDLOG_BUILD_TESTS",
+        ),
+        (
+            'option(protobuf_BUILD_TESTS "Build tests" OFF)',
+            "protobuf_BUILD_TESTS",
+        ),
+        (
+            'option(FMT_PEDANTIC "Enable extra warnings and expensive tests." OFF)',
+            None,
+        ),
+    ],
+)
+def test_cmake_selects_only_an_ordinary_project_test_option(
+    tmp_path: Path,
+    option_text: str,
+    expected: str | None,
+) -> None:
+    (tmp_path / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.20...4.0)\n"
+        f"{option_text}\n"
+        "include(CTest)\n",
+        encoding="utf-8",
+    )
+
+    step = detect_plan(_repository(), tmp_path).steps[0]
+
+    selected = [
+        item.removeprefix("test-option.")
+        for item in step.evidence
+        if item.startswith("test-option.")
+    ]
+    assert selected == ([] if expected is None else [expected])
+
+
+def test_cmake_dependency_identity_includes_package_manifests(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.20)\ninclude(CTest)\n",
+        encoding="utf-8",
+    )
+    packages = tmp_path / "vcpkg.json"
+    packages.write_text('{"dependencies": ["fmt"]}\n', encoding="utf-8")
+
+    first = _dependency_fingerprint(tmp_path, "cmake", CMAKE_IMAGE)
+    packages.write_text('{"dependencies": ["catch2"]}\n', encoding="utf-8")
+    second = _dependency_fingerprint(tmp_path, "cmake", CMAKE_IMAGE)
 
     assert first != second
 

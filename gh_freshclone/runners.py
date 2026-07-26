@@ -257,6 +257,11 @@ def _cache_environment(
             "GRADLE_USER_HOME=/cache/gradle",
             "GRADLE_OPTS=-Dorg.gradle.daemon=false -Dorg.gradle.workers.max=2",
         )
+    if ecosystem == "cmake":
+        return (
+            "PIP_CACHE_DIR=/prepared/pip",
+            "PYTHONPATH=/prepared/tools",
+        ) if prepared_volume else ()
     return ()
 
 
@@ -286,6 +291,8 @@ def _prepare_marker_paths(
         return tuple(markers)
     if effective_volume and step.ecosystem in {"maven", "gradle"}:
         return (f"/cache/{_PREPARE_MARKER}",)
+    if effective_volume and step.ecosystem == "cmake":
+        return (f"/prepared/{_PREPARE_MARKER}",)
     if effective_cache and step.ecosystem in {
         "deno",
         "rust",
@@ -377,7 +384,15 @@ def build_runner_command(
             cache_dir
             and not (
                 step.ecosystem
-                in {"python", "node", "bun", "deno", "maven", "gradle"}
+                in {
+                    "python",
+                    "node",
+                    "bun",
+                    "deno",
+                    "maven",
+                    "gradle",
+                    "cmake",
+                }
                 and prepared_volume
             )
         )
@@ -446,7 +461,7 @@ def build_runner_command(
             command.append(
                 f"--mount=type=bind,source={resolved_cache},target=/cache"
             )
-        if prepared_volume and step.ecosystem in {"python", "deno"}:
+        if prepared_volume and step.ecosystem in {"python", "deno", "cmake"}:
             command.append(
                 f"--mount=type=volume,source={prepared_volume},target=/prepared"
             )
@@ -504,7 +519,7 @@ def build_runner_command(
             command.extend(("--env", value))
         if resolved_cache:
             command.extend(("--volume", f"{resolved_cache}:/cache"))
-        if prepared_volume and step.ecosystem in {"python", "deno"}:
+        if prepared_volume and step.ecosystem in {"python", "deno", "cmake"}:
             command.extend(("--volume", f"{prepared_volume}:/prepared"))
         elif prepared_volume and step.ecosystem in {"node", "bun"}:
             command.extend(
@@ -919,6 +934,7 @@ def run_step(
         "deno",
         "maven",
         "gradle",
+        "cmake",
     }
     effective_volume = (
         f"{prepared_volume}-i{image_key}"

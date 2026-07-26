@@ -6,6 +6,23 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.11.0
+
+- Add a conservative automatic CMake/C++ baseline. Planning statically
+  requires a root CTest signal, rejects minimum CMake versions newer than the
+  pinned 3.31.10 runtime, and infers at most one ordinary project test option
+  while excluding expensive or specialized variants.
+- Prepare pinned CMake 3.31.10 and Ninja 1.13.0 in an app-managed volume and
+  run a configure-only dependency phase that persists FetchContent sources.
+  A fresh build tree is then configured, built with bounded parallelism, and
+  tested in a separate network-disabled container. FetchContent is forced
+  fully disconnected and zero discovered tests are a failure rather than a
+  false PASS.
+- Cover Docker and Apple `container` volume construction plus native amd64 and
+  arm64 C++ prepare/offline/build/CTest boundaries. A real
+  `fmtlib/fmt@2a2d9edb257322bec0f7ac602fde3b382fe0082a` check passed 21 of 21
+  tests offline; its exact-commit PASS then returned in 0.42 seconds.
+
 ## 0.10.0
 
 - Compile automatic plans from Git tree metadata and only the committed

@@ -649,6 +649,117 @@ def test_apple_container_mounts_java_managed_volume(
     assert all("host-cache" not in volume for volume in volumes)
 
 
+@pytest.mark.parametrize("runner", ["docker", "container"])
+def test_cmake_tools_use_scoped_prepared_volume(
+    tmp_path: Path,
+    runner: str,
+) -> None:
+    step = CheckStep(
+        "cmake",
+        "docker.io/library/python:3.13-bookworm",
+        "export PATH=/prepared/tools/bin:$PATH && cmake --version",
+        ("CMakeLists.txt",),
+        prepare_command="python -m pip install --target /prepared/tools cmake ninja",
+        test_network="none",
+    )
+    cache = tmp_path / "host-cache"
+
+    command = build_runner_command(
+        runner,
+        step,
+        tmp_path,
+        cpus=2,
+        memory="4g",
+        cache_dir=cache,
+        prepared_volume="ghfc-cmake-cache",
+        network_enabled=False,
+    )
+    rendered = " ".join(command)
+
+    assert "ghfc-cmake-cache" in rendered
+    assert "/prepared" in rendered
+    assert str(cache.resolve()) not in rendered
+    assert "PIP_CACHE_DIR=/prepared/pip" in rendered
+    assert "PYTHONPATH=/prepared/tools" in rendered
+    if runner == "container":
+        assert command[command.index("--network") + 1] == "none"
+    else:
+        assert "--network=none" in command
+
+
+def test_cmake_preparation_cache_requires_success_marker() -> None:
+    markers = runners._prepare_marker_paths(
+        CheckStep(
+            "cmake",
+            "docker.io/library/python:3.13-bookworm",
+            "ctest",
+            prepare_command="install tools",
+        ),
+        effective_cache=None,
+        effective_volume="ghfc-cmake-cache",
+        support_volume=None,
+    )
+
+    assert markers == ("/prepared/.gh-freshclone-prepared-v1",)
+
+
+def test_cmake_preparation_uses_image_scoped_managed_volume(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    step = CheckStep(
+        "cmake",
+        "docker.io/library/python:3.13-bookworm",
+        "ctest",
+        prepare_command="install tools",
+        test_network="none",
+    )
+    created: list[str] = []
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        runners,
+        "resolve_image_identity",
+        lambda runner, image: f"{image}@sha256:" + "a" * 64,
+    )
+    monkeypatch.setattr(runners, "runner_version", lambda runner: "test")
+    monkeypatch.setattr(
+        runners,
+        "_ensure_prepared_volume",
+        lambda runner, name: created.append(name),
+    )
+    monkeypatch.setattr(
+        runners,
+        "_execute_phase",
+        lambda **kwargs: (
+            commands.append(kwargs["command"])
+            or runners._PhaseExecution(0, 0.1, "", frozenset())
+        ),
+    )
+
+    result = run_step(
+        "docker",
+        step,
+        tmp_path,
+        tmp_path / "cmake.log",
+        cpus=2,
+        memory="4g",
+        echo=False,
+        cache_dir=tmp_path / "host-cache",
+        prepared_volume="ghfc-cmake",
+    )
+
+    assert created == [result.prepared_volume]
+    assert result.prepared_volume.startswith("ghfc-cmake-i")
+    assert all(
+        f"source={result.prepared_volume},target=/prepared" in " ".join(command)
+        for command in commands
+    )
+    assert all("--network=none" not in command for command in commands[:1])
+    assert "--network=none" in commands[1]
+    host_cache = str((tmp_path / "host-cache").resolve())
+    assert all(host_cache not in command for command in commands)
+
+
 def test_run_step_uses_distinct_prepare_and_offline_test_containers(
     monkeypatch,
     tmp_path: Path,
