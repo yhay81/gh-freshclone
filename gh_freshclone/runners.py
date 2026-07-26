@@ -284,6 +284,8 @@ def _prepare_marker_paths(
         if support_volume:
             markers.append(f"/prepared/{_PREPARE_MARKER}")
         return tuple(markers)
+    if effective_volume and step.ecosystem in {"maven", "gradle"}:
+        return (f"/cache/{_PREPARE_MARKER}",)
     if effective_cache and step.ecosystem in {
         "deno",
         "rust",
@@ -374,7 +376,8 @@ def build_runner_command(
         if (
             cache_dir
             and not (
-                step.ecosystem in {"python", "node", "bun", "deno"}
+                step.ecosystem
+                in {"python", "node", "bun", "deno", "maven", "gradle"}
                 and prepared_volume
             )
         )
@@ -452,6 +455,10 @@ def build_runner_command(
                 f"--volume={prepared_volume}:"
                 f"{working_directory}/node_modules"
             )
+        elif prepared_volume and step.ecosystem in {"maven", "gradle"}:
+            command.append(
+                f"--mount=type=volume,source={prepared_volume},target=/cache"
+            )
         if support_volume:
             command.append(
                 f"--mount=type=volume,source={support_volume},target=/prepared"
@@ -506,6 +513,8 @@ def build_runner_command(
                     f"{prepared_volume}:{working_directory}/node_modules",
                 )
             )
+        elif prepared_volume and step.ecosystem in {"maven", "gradle"}:
+            command.extend(("--volume", f"{prepared_volume}:/cache"))
         if support_volume:
             command.extend(("--volume", f"{support_volume}:/prepared"))
         if container_name:
@@ -903,7 +912,14 @@ def run_step(
     image_identity = resolve_image_identity(runner, step.image)
     cache_key = execution_cache_key(step, image_identity)
     image_key = hashlib.sha256(image_identity.encode()).hexdigest()[:12]
-    stateful_ecosystems = {"python", "node", "bun", "deno"}
+    stateful_ecosystems = {
+        "python",
+        "node",
+        "bun",
+        "deno",
+        "maven",
+        "gradle",
+    }
     effective_volume = (
         f"{prepared_volume}-i{image_key}"
         if (

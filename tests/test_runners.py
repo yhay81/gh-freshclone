@@ -503,7 +503,7 @@ def test_python_nested_working_directory_uses_persistent_environment(
         ("gradle", "--env=GRADLE_USER_HOME=/cache/gradle"),
     ],
 )
-def test_java_build_tools_use_scoped_host_cache(
+def test_java_build_tools_use_scoped_named_volume(
     tmp_path: Path,
     ecosystem: str,
     environment: str,
@@ -525,12 +525,17 @@ def test_java_build_tools_use_scoped_host_cache(
         cpus=2,
         memory="4g",
         cache_dir=cache,
+        prepared_volume="ghfc-java-cache",
     )
 
     assert environment in command
     assert (
-        f"--mount=type=bind,source={cache.resolve()},target=/cache"
+        "--mount=type=volume,source=ghfc-java-cache,target=/cache"
         in command
+    )
+    assert (
+        f"--mount=type=bind,source={cache.resolve()},target=/cache"
+        not in command
     )
     assert "target=/prepared" not in " ".join(command)
 
@@ -547,12 +552,101 @@ def test_java_preparation_cache_requires_success_marker(
             "test command",
             prepare_command="prepare command",
         ),
-        effective_cache=tmp_path / "dependency-cache",
-        effective_volume=None,
+        effective_cache=None,
+        effective_volume="ghfc-java-cache",
         support_volume=None,
     )
 
     assert markers == ("/cache/.gh-freshclone-prepared-v1",)
+
+
+@pytest.mark.parametrize("ecosystem", ["maven", "gradle"])
+def test_java_preparation_uses_image_scoped_managed_volume(
+    monkeypatch,
+    tmp_path: Path,
+    ecosystem: str,
+) -> None:
+    step = CheckStep(
+        ecosystem,
+        "eclipse-temurin:21-jdk-noble",
+        "test command",
+        prepare_command="prepare command",
+        test_network="none",
+    )
+    created: list[str] = []
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        runners,
+        "resolve_image_identity",
+        lambda runner, image: f"{image}@sha256:" + "a" * 64,
+    )
+    monkeypatch.setattr(runners, "runner_version", lambda runner: "test")
+    monkeypatch.setattr(
+        runners,
+        "_ensure_prepared_volume",
+        lambda runner, name: created.append(name),
+    )
+    monkeypatch.setattr(
+        runners,
+        "_execute_phase",
+        lambda **kwargs: (
+            commands.append(kwargs["command"])
+            or runners._PhaseExecution(0, 0.1, "", frozenset())
+        ),
+    )
+
+    result = run_step(
+        "docker",
+        step,
+        tmp_path,
+        tmp_path / f"{ecosystem}.log",
+        cpus=2,
+        memory="4g",
+        echo=False,
+        cache_dir=tmp_path / "host-cache",
+        prepared_volume=f"ghfc-{ecosystem}",
+    )
+
+    assert created == [result.prepared_volume]
+    assert result.prepared_volume.startswith(f"ghfc-{ecosystem}-i")
+    assert all(
+        f"source={result.prepared_volume},target=/cache" in " ".join(command)
+        for command in commands
+    )
+    host_cache = str((tmp_path / "host-cache").resolve())
+    assert all(host_cache not in command for command in commands)
+
+
+@pytest.mark.parametrize("ecosystem", ["maven", "gradle"])
+def test_apple_container_mounts_java_managed_volume(
+    tmp_path: Path,
+    ecosystem: str,
+) -> None:
+    step = CheckStep(
+        ecosystem,
+        "eclipse-temurin:21-jdk-noble",
+        "test command",
+        prepare_command="prepare command",
+        test_network="none",
+    )
+
+    command = build_runner_command(
+        "container",
+        step,
+        tmp_path,
+        cpus=2,
+        memory="4g",
+        cache_dir=tmp_path / "host-cache",
+        prepared_volume="ghfc-java-cache",
+    )
+    volumes = [
+        command[index + 1]
+        for index, value in enumerate(command)
+        if value == "--volume"
+    ]
+
+    assert "ghfc-java-cache:/cache" in volumes
+    assert all("host-cache" not in volume for volume in volumes)
 
 
 def test_run_step_uses_distinct_prepare_and_offline_test_containers(

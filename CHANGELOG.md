@@ -11,7 +11,9 @@ adapter versions evolve independently.
 - Add conservative Maven and Gradle automatic baselines. Both prepare
   dependencies with network access and rerun the selected lifecycle offline in
   a separate credential-free container; committed wrappers and Java toolchain
-  declarations participate in evidence and cache identity.
+  declarations participate in evidence and cache identity. Java dependency
+  state uses app-managed volumes to avoid host UID/permission coupling without
+  widening container capabilities.
 - Make Maven offline execution robust to dynamically selected Surefire
   providers and JUnit Platform launcher artifacts that
   `dependency:go-offline` alone omits.

@@ -216,10 +216,11 @@ initialization failures as a JSON error envelope on standard output:
 - Lockfiles and relevant manifests form a dependency fingerprint.
 - Go reuses module and build caches but compiles `go test -count=1`, so a
   fresh proof cannot silently reuse a previous successful test result.
-- Maven and Gradle reuse repository-, image-, and dependency-scoped download
-  caches. Dependencies are prepared with network access, then the lifecycle is
-  rerun from a fresh read-only checkout with Maven offline mode or Gradle
-  `--offline` in a network-disabled container.
+- Maven and Gradle reuse repository-, image-, and dependency-scoped
+  app-managed volumes. Dependencies are prepared with network access, then the
+  lifecycle is rerun from a fresh read-only checkout with Maven offline mode
+  or Gradle `--offline` in a network-disabled container. Managed volumes avoid
+  host UID/permission coupling without granting broader container privileges.
 - Canonical CPU and memory limits are recorded in receipt v6 and participate
   in receipt and PASS-index identity; a proof produced at `2 CPU / 4g` is
   never reused for an `8g` request.
@@ -231,10 +232,10 @@ initialization failures as a JSON error envelope on standard output:
   preparation command, and working directory—not the test command. Changing a
   test selector does not redownload dependencies, while changing preparation
   still invalidates the cache.
-- Python `.venv`/tox state and Node.js/Bun `node_modules` are kept in
-  exact-commit, step-scoped volumes. A success marker allows a fresh proof to
-  skip redundant dependency preparation without treating an interrupted
-  preparation as reusable.
+- Python `.venv`/tox state, Node.js/Bun `node_modules`, and Maven/Gradle
+  dependency state are kept in exact-commit, step-scoped volumes. A success
+  marker allows a fresh proof to skip redundant dependency preparation
+  without treating an interrupted preparation as reusable.
 - A failed preparation discards only its
   repo/commit/lockfile/image-scoped host cache or prepared volumes before the
   app performs one clean retry in the same check. This prevents
