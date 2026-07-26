@@ -80,7 +80,7 @@ jobs:
       - run: docker info
       - run: uv run pytest -q tests/test_container_e2e.py
 
-  docker-arm64-cmake-e2e:
+  docker-arm64-cmake-make-e2e:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     env:
@@ -98,8 +98,8 @@ jobs:
           test "$(uname -m)" = "aarch64"
           docker info
       - run: uv sync --locked
-      - name: Exercise CMake prepare and offline test on arm64
-        run: uv run pytest -q tests/test_container_e2e.py -k cmake
+      - name: Exercise CMake and Make offline tests on arm64
+        run: uv run pytest -q tests/test_container_e2e.py -k "cmake or make_baseline"
 
   docker-arm64-dotnet-e2e:
     runs-on: ubuntu-24.04-arm

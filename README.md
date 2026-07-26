@@ -13,9 +13,9 @@ JSON receipt. It distinguishes repository test failures from runner failures
 and missing environment capabilities.
 
 Automatic detection covers root-level Python, Node.js/Bun/Deno, Rust, Go,
-Maven, Gradle, Ruby/Bundler, Composer/PHPUnit, CMake, and .NET projects. A
-repository-owned configuration compiles explicit monorepo steps. The package
-is alpha software.
+Maven, Gradle, Ruby/Bundler, Composer/PHPUnit, CMake, Make/configure, and .NET
+projects. A repository-owned configuration compiles explicit monorepo steps.
+The package is alpha software.
 
 ## Why it exists
 
@@ -57,7 +57,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.15.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.16.0"
 gh-freshclone doctor
 ```
 
@@ -261,6 +261,13 @@ initialization failures as a JSON error envelope on standard output:
   `FETCHCONTENT_FULLY_DISCONNECTED=ON` and no container network; compiled
   outputs are not reused. `ctest --no-tests=error` prevents a zero-test build
   from becoming a false PASS.
+- Make planning reads only a root `GNUmakefile` or `Makefile` and accepts a
+  literal ordinary `test`, `tests`, or `check` target. If a root `configure`
+  exists, it must be a bounded UTF-8 sh/bash script. The fixed target runs in
+  the official multi-architecture Buildpack Dependencies Bookworm image with
+  no preparation phase, no credentials, and no container network;
+  documentation, CI snippets, variable-expanded targets, and unknown
+  configure entrypoints are never inferred.
 - Composer planning requires `composer.lock`, a direct `phpunit/phpunit`
   declaration, the matching locked package, and the default `vendor/` layout.
   It rejects locked Composer plugins instead of allowing package code to run
@@ -481,11 +488,11 @@ probe on a dedicated self-hosted runner labelled
 `gh-freshclone-apple-container`. GitHub-hosted macOS runners cannot provide
 this proof because [nested virtualization is not
 supported](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#limitations).
-The ordinary CI workflow additionally runs the CMake, .NET,
-Composer/PHPUnit, and Ruby/Bundler prepare/offline E2Es on native GitHub-hosted
-`ubuntu-24.04-arm` runners. This continuously verifies the same arm64 OCI
-images and dependency paths used by Apple silicon, while the self-hosted
-workflow retains coverage of Apple `container` itself.
+The ordinary CI workflow additionally runs the CMake, Make/configure, .NET,
+Composer/PHPUnit, and Ruby/Bundler offline-boundary E2Es on native
+GitHub-hosted `ubuntu-24.04-arm` runners. This continuously verifies the same
+arm64 OCI images and dependency paths used by Apple silicon, while the
+self-hosted workflow retains coverage of Apple `container` itself.
 A physical Apple silicon run and cold/warm public-repository measurements are
 recorded in
 [`docs/field-trial-2026-07-25.md`](docs/field-trial-2026-07-25.md#physical-apple-container-validation).
@@ -559,6 +566,12 @@ Current evidence sources include:
   vendor/bin layouts, locks missing the declared runner, transitive runners,
   and executable Composer plugin graphs are reported rather than guessed or
   executed
+- Make/configure: one root `GNUmakefile` or `Makefile` with a literal `test`,
+  `tests`, or `check` rule, plus an optional root sh/bash `configure`; the
+  selected fixed command runs only in a network-disabled official
+  buildpack container; `quick` prefers the conventional `check` target while
+  `reproduce`/`full` prefer `test`, and a supported CMake plan takes
+  precedence to avoid duplicate native builds
 - .NET: one root `.sln` or `.slnx`, optional `global.json`, and statically
   listed project paths; `quick` selects one ordinary unit-test project while
   rejecting benchmark, integration, performance, sample, and utility projects
@@ -668,10 +681,10 @@ uv run python -m benchmarks.cli_startup
 ```
 
 CI runs unit and local-checkout integration tests on Windows, macOS, and Linux.
-It also runs real Docker prepare/offline-test E2E, native arm64 CMake, .NET,
-Composer/PHPUnit, and Ruby/Bundler boundary jobs, and the cached-path
-performance contract. Native Apple `container` E2E is available through the
-dedicated self-hosted workflow.
+It also runs real Docker prepare/offline-test E2E, native arm64 CMake,
+Make/configure, .NET, Composer/PHPUnit, and Ruby/Bundler boundary jobs, and the
+cached-path performance contract. Native Apple `container` E2E is available
+through the dedicated self-hosted workflow.
 
 ## Release process
 

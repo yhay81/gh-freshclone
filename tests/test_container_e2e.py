@@ -456,6 +456,79 @@ int main() {
         _cleanup_test_volumes()
 
 
+def test_make_baseline_runs_in_the_network_disabled_phase(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "make-repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repository)],
+        check=True,
+        capture_output=True,
+    )
+    (repository / "Makefile").write_text(
+        ".PHONY: test\n"
+        "test: baseline\n"
+        "\t./baseline\n"
+        "baseline: baseline.c\n"
+        "\t$(CC) -std=c11 -Wall -Wextra -Werror -o $@ $<\n",
+        encoding="utf-8",
+    )
+    (repository / "baseline.c").write_text(
+        """
+#include <stdio.h>
+
+int main(void) {
+    puts("Make baseline passed offline");
+    return 0;
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path / "make-e2e-cache"))
+
+    receipt, _, _ = check_repository(
+        str(repository),
+        runner=E2E_RUNNER,
+        use_cache=False,
+        echo=True,
+    )
+
+    assert isinstance(receipt, Receipt)
+    assert receipt.status == "pass", receipt.to_dict()
+    assert receipt.plan.steps[0].ecosystem == "make"
+    assert receipt.results[0].test_network == "none"
+    assert receipt.results[0].failed_phase is None
+    assert receipt.results[0].prepared_volume is None
+    assert receipt.results[0].prepare_cache_hit is None
+    log = Path(receipt.results[0].log_path).read_text(encoding="utf-8")
+    assert "prepare (network enabled) phase" not in log
+    assert "test (network none) phase" in log
+    assert "Make baseline passed offline" in log
+
+
 def test_dotnet_restore_crosses_the_offline_phase_boundary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

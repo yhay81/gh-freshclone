@@ -6,6 +6,28 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.16.0
+
+- Add fail-closed root Make/configure detection. Planning accepts only a
+  bounded UTF-8 `GNUmakefile` or `Makefile` with a literal ordinary `test`,
+  `tests`, or `check` target and, when present, a root sh/bash `configure`.
+  It never infers commands from README or CI text, variable-expanded targets,
+  recipe bodies, or unknown configure entrypoints.
+- Run the fixed configure/Make lifecycle in the official multi-architecture
+  Buildpack Dependencies Bookworm image with no dependency-preparation phase,
+  forwarded credentials, or container network. It shares its base layers with
+  the existing Python, Node, and Ruby runtimes instead of adding a dedicated
+  2 GiB compiler image. `quick` prefers the conventional `check` target while
+  `reproduce`/`full` prefer `test`; on zstd this avoids the initial baseline's
+  all-variant 5 GB large-data suite. Supported CMake plans take precedence,
+  avoiding duplicate native builds. Plan v9 and execution policy v21 prevent
+  reuse across the new selection boundary.
+- Add Windows/macOS/Linux materialization coverage, a native Docker
+  network-disabled C compilation E2E, and a native arm64 CMake/Make boundary
+  job. Replanning 45 recent KAGARI candidates increased automatic coverage
+  from 23 to 26 by adding FFmpeg, CUPS, and Redis; targeted checks also added
+  Samba and zstd without broadening the command-inference boundary.
+
 ## 0.15.0
 
 - Add conservative Ruby/Bundler detection for an exact `Gemfile.lock` with a
