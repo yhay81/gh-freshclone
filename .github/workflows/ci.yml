@@ -58,7 +58,7 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run pyright
-      - run: uv run bandit -r gh_freshclone -q
+      - run: uv run bandit -r gh_freshclone scripts/github_action.py -q
       - run: uv run coverage run -m pytest -q
       - run: uv run coverage report
       - run: uv build
@@ -79,6 +79,34 @@ jobs:
       - run: uv sync --locked
       - run: docker info
       - run: uv run pytest -q tests/test_container_e2e.py
+      - name: Exercise the local composite action
+        id: action-e2e
+        uses: ./
+        with:
+          repository: "."
+          no-cache: "true"
+      - name: Verify the composite-action result
+        env:
+          RESULT_PATH: ${{ steps.action-e2e.outputs.result-path }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          result_path = Path(os.environ["RESULT_PATH"])
+          result = json.loads(result_path.read_text(encoding="utf-8"))
+          expected_commit = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], text=True
+          ).strip()
+          assert result["status"] == "pass"
+          assert result["cached"] is False
+          assert result["receipt_version"] == 7
+          assert result["execution_policy_version"] == 22
+          assert result["plan"]["plan_version"] == 10
+          assert result["plan"]["repository"]["commit_sha"] == expected_commit
+          PY
 
   docker-arm64-cmake-make-e2e:
     runs-on: ubuntu-24.04-arm

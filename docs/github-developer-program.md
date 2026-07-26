@@ -27,6 +27,22 @@ The command does not execute repository code. API observations are mutable, so
 they do not alter the deterministic baseline plan, receipt, or PASS-cache
 identity.
 
+## GitHub Actions integration
+
+Release v0.19 adds a public composite action for Linux Docker or Podman jobs.
+A caller can run the same exact-commit baseline as one workflow step and
+retain the complete JSON proof through the action's `result-path` output. A
+public remote target needs no checkout, GitHub token, secret, API permission,
+hosted service, or webhook.
+
+The action installs `gh-freshclone` from its own immutable action ref. Caller
+inputs enter a fixed Python entrypoint through environment variables, then
+remain separate arguments in a non-shell `uvx` invocation. The target follows
+an explicit option delimiter, and Git/GitHub credential variables are removed
+from the child environment. CI exercises the local action against its exact
+checked-out commit in a real Docker baseline and verifies the receipt,
+execution-policy, plan, and commit identities.
+
 ## Production consumer evidence
 
 KAGARI, the author's resident security-research coordinator, uses

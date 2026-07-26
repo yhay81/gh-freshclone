@@ -57,7 +57,7 @@ Prerequisites:
 Try the signed release without installing it or executing repository code:
 
 ```shell
-uvx --from "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.18.0" gh-freshclone plan pallets/itsdangerous
+uvx --from "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.19.0" gh-freshclone plan pallets/itsdangerous
 ```
 
 This resolves an immutable public commit and prints the baseline it would run.
@@ -68,7 +68,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.18.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.19.0"
 gh-freshclone doctor
 ```
 
@@ -177,6 +177,41 @@ The ordinary `plan` and `check` paths continue to use credential-free Git
 smart HTTP and do not require a GitHub API quota or token. See
 [the GitHub integration note](docs/github-developer-program.md) for API
 boundaries and Developer Program evidence.
+
+## GitHub Action
+
+On a GitHub-hosted Ubuntu runner, the composite action installs the package
+from the same immutable action ref and writes the complete JSON result to an
+output path. It needs no checkout, GitHub token, secret, or write permission
+for a public remote target:
+
+```yaml
+permissions: {}
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - id: baseline
+        uses: yhay81/gh-freshclone@v0.19.0
+        with:
+          repository: pallets/itsdangerous
+          ref: 672971d66a2ef9f85151e53283113f33d642dabd
+      - name: Retain the proof even when the baseline fails
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0 # v7.0.1
+        with:
+          name: gh-freshclone-result
+          path: ${{ steps.baseline.outputs.result-path }}
+```
+
+Inputs also expose `component`, `profile`, `runner`, `test-network`,
+`no-cache`, `cpus`, and `memory`. GitHub expressions enter the fixed Python
+entrypoint only through environment variables; it invokes `uvx` without a
+shell, places the repository after an option delimiter, and removes Git and
+GitHub credential variables from the child environment. The action requires a
+Linux job with Docker or Podman. Use the standalone CLI for Windows, macOS,
+or Apple `container`.
 
 ## What a result means
 

@@ -6,6 +6,19 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.19.0
+
+- Add a zero-secret composite GitHub Action for Linux Docker or Podman jobs.
+  It installs `gh-freshclone` from the same immutable action ref, passes every
+  caller input as a non-shell argument, removes Git and GitHub credential
+  variables from the child environment, and exposes the complete JSON proof
+  through a result-path output.
+- Exercise the action itself against the exact checked-out commit in the
+  native Docker E2E gate. The assertion covers a fresh test run, receipt v7,
+  execution policy v22, plan v10, and exact commit identity.
+- Add a structured zero-telemetry field-report form for successful checks,
+  safe failures, performance observations, and unsupported public targets.
+
 ## 0.18.0
 
 - Avoid `git ls-tree -l` during ordinary component planning. Partial clones no
