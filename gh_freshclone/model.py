@@ -6,13 +6,35 @@ from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
-PLAN_VERSION = 9
+PLAN_VERSION = 10
 RECEIPT_VERSION = 6
 EXECUTION_POLICY_VERSION = 21
 _MEMORY_LIMIT = re.compile(
     r"[1-9]\d*(?:\.\d+)?(?:[bkmg]i?b?|b)?",
     re.IGNORECASE,
 )
+
+
+def normalize_component(value: str) -> str:
+    """Return one portable repository-relative component path."""
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\\" in value
+        or ":" in value
+        or "\0" in value
+    ):
+        raise ValueError("component must be a non-empty POSIX path")
+    path = PurePosixPath(value)
+    if (
+        path.is_absolute()
+        or ".." in path.parts
+        or ".git" in path.parts
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("component must stay within the repository")
+    return path.as_posix()
 
 
 @dataclass(frozen=True)
@@ -71,12 +93,17 @@ class BaselinePlan:
     steps: tuple[CheckStep, ...]
     profile: str = "quick"
     warnings: tuple[str, ...] = ()
+    component: str = "."
     plan_version: int = PLAN_VERSION
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "component", normalize_component(self.component))
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "plan_version": self.plan_version,
             "profile": self.profile,
+            "component": self.component,
             "repository": self.repository.to_dict(),
             "steps": [step.to_dict() for step in self.steps],
             "warnings": list(self.warnings),

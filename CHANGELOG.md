@@ -6,6 +6,28 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.17.0
+
+- Add an explicit `--component PATH` scope to `plan` and `check`. The compiler
+  applies the ordinary conservative automatic detector, or a component-owned
+  `.gh-freshclone.toml`, at exactly that committed repository-relative
+  directory. Evidence and working directories retain the full path, while
+  dependency fingerprints, PASS indexes, locks, and receipts are isolated
+  between components.
+- Hydrate only bounded component planning inputs, then expand and archive only
+  the selected immutable component after an executable plan exists. This
+  avoids unrelated monorepo I/O and host-incompatible paths while preserving
+  an exact detached commit, read-only input, credential-free checkout, and the
+  existing prepare/test sandbox boundary. Plan v10 prevents reuse across the
+  new scope identity; execution policy remains v21.
+- Add Windows/macOS/Linux boundary coverage and a native Docker component E2E.
+  The motivating KAGARI target,
+  `dependabot/dependabot-core@6c8bb8bd9cb7ec79c324bc550a992ab66201e76a`,
+  now compiles `npm_and_yarn/helpers` without repository changes. Its five
+  Jest suites and 25 tests passed when the caller explicitly enabled the
+  registry access the upstream tests require; the default offline run instead
+  failed closed as a high-confidence network-policy environment gap.
+
 ## 0.16.0
 
 - Add fail-closed root Make/configure detection. Planning accepts only a

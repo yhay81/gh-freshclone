@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
 from .configuration import CONFIG_NAME
-from .model import Repository
+from .model import Repository, normalize_component
 from .process import CommandError, run
 
 _OWNER_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -23,6 +23,8 @@ _GITHUB_SSH_URL = re.compile(
     re.IGNORECASE,
 )
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
+_MAX_COMPONENT_PLAN_FILES = 4096
+_MAX_COMPONENT_PLAN_BYTES = 64 * 1024 * 1024
 _WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -890,6 +892,208 @@ def _materialize_automatic_plan_inputs(
     return True
 
 
+def _materialize_component_plan_inputs(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+    component: str,
+) -> None:
+    from .detect import (
+        AUTOMATIC_PLAN_INPUT_FILES,
+        AUTOMATIC_PLAN_INPUT_SUFFIXES,
+        NESTED_MANIFEST_NAMES,
+        RUBY_RAKE_TASK_PREFIXES,
+        _dotnet_solution_projects,
+    )
+
+    portable = _portable_checkout_path(component)
+    if portable is None:
+        raise RepositoryError(f"component is not portable on this host: {component}")
+    if (
+        _tree_object_type(
+            repository,
+            destination,
+            environment,
+            component,
+        )
+        != "tree"
+    ):
+        raise RepositoryError(
+            f"component is not a committed repository directory: {component}"
+        )
+    result = run(
+        [
+            "git",
+            "-C",
+            str(destination),
+            "ls-tree",
+            "-r",
+            "-l",
+            "-z",
+            "--full-tree",
+            repository.commit_sha,
+            "--",
+            f":(top,literal){component}",
+        ],
+        env=environment,
+    )
+    entries: list[tuple[PurePosixPath, PurePosixPath, int]] = []
+    total_bytes = 0
+    for record in result.stdout.split("\0"):
+        if not record:
+            continue
+        try:
+            metadata, value = record.split("\t", 1)
+            _, object_type, _, size = metadata.split()
+        except ValueError as exc:
+            raise RepositoryError(
+                f"cannot inspect component tree: {component}"
+            ) from exc
+        if object_type != "blob":
+            continue
+        path = _portable_checkout_path(value)
+        if path is None or not path.is_relative_to(portable):
+            continue
+        try:
+            blob_size = int(size)
+        except ValueError as exc:
+            raise RepositoryError(
+                f"cannot inspect component blob size: {value}"
+            ) from exc
+        entries.append((path, path.relative_to(portable), blob_size))
+    component_config = portable / CONFIG_NAME
+    if any(path == component_config for path, _, _ in entries):
+        if len(entries) > _MAX_COMPONENT_PLAN_FILES:
+            raise RepositoryError(
+                "component plan inspection exceeds "
+                f"{_MAX_COMPONENT_PLAN_FILES} committed files"
+            )
+        total_bytes = sum(size for _, _, size in entries)
+        if total_bytes > _MAX_COMPONENT_PLAN_BYTES:
+            raise RepositoryError(
+                "component plan inspection exceeds "
+                f"{_MAX_COMPONENT_PLAN_BYTES // (1024 * 1024)} MiB"
+            )
+        selected = [path.as_posix() for path, _, _ in entries]
+    else:
+        selected = []
+        for path, relative, _ in entries:
+            value = relative.as_posix()
+            ruby_task = relative.suffix.casefold() == ".rake" and (
+                len(relative.parts) == 1
+                or any(
+                    value.startswith(prefix)
+                    for prefix in RUBY_RAKE_TASK_PREFIXES
+                )
+            )
+            if (
+                value in AUTOMATIC_PLAN_INPUT_FILES
+                or (
+                    len(relative.parts) == 1
+                    and relative.suffix.casefold()
+                    in AUTOMATIC_PLAN_INPUT_SUFFIXES
+                )
+                or (
+                    len(relative.parts) == 3
+                    and relative.name in NESTED_MANIFEST_NAMES
+                )
+                or ruby_task
+            ):
+                selected.append(path.as_posix())
+    if not entries:
+        raise RepositoryError(f"component has no committed files: {component}")
+    paths = tuple(dict.fromkeys(selected))
+    _checkout_paths(
+        repository,
+        destination,
+        environment,
+        paths,
+    )
+
+    component_root = destination.joinpath(*portable.parts)
+    component_root.mkdir(parents=True, exist_ok=True)
+    available = {relative.as_posix() for _, relative, _ in entries}
+    package_path = component_root / "package.json"
+    node_entrypoints: list[str] = []
+    if package_path.is_file():
+        try:
+            package = json.loads(package_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            package = {}
+        if isinstance(package, dict):
+            for field in ("main", "module", "types", "typings"):
+                value = package.get(field)
+                if not isinstance(value, str):
+                    continue
+                relative = _portable_checkout_path(
+                    value.strip().removeprefix("./")
+                )
+                if relative is not None and relative.as_posix() in available:
+                    node_entrypoints.append(
+                        (portable / relative).as_posix()
+                    )
+    selected_entrypoints = tuple(dict.fromkeys(node_entrypoints))
+    _checkout_paths(
+        repository,
+        destination,
+        environment,
+        selected_entrypoints,
+    )
+    _checkout_symlink_targets(
+        repository,
+        destination,
+        environment,
+        selected_entrypoints,
+    )
+
+    solutions = sorted(
+        (
+            *component_root.glob("*.sln"),
+            *component_root.glob("*.slnx"),
+        ),
+        key=lambda path: path.name.casefold(),
+    )
+    dotnet_projects: list[str] = []
+    if len(solutions) == 1:
+        projects = _dotnet_solution_projects(solutions[0])
+        if len(projects) <= 256:
+            dotnet_projects.extend(
+                (portable / PurePosixPath(project)).as_posix()
+                for project in projects
+                if (
+                    _portable_checkout_path(project) is not None
+                    and project in available
+                )
+            )
+    selected_projects = tuple(dict.fromkeys(dotnet_projects))
+    _checkout_paths(
+        repository,
+        destination,
+        environment,
+        selected_projects,
+    )
+    _checkout_symlink_targets(
+        repository,
+        destination,
+        environment,
+        selected_projects,
+    )
+
+    for directory in ("tests", "test", "spec"):
+        if any(
+            len(relative.parts) > 1
+            and relative.parts[0] == directory
+            for _, relative, _ in entries
+        ):
+            (component_root / directory).mkdir(exist_ok=True)
+    _checkout_symlink_targets(
+        repository,
+        destination,
+        environment,
+        paths,
+    )
+
+
 def materialize(repository: Repository, destination: Path) -> None:
     """Create a credential-free checkout pinned to ``repository.commit_sha``."""
 
@@ -903,15 +1107,27 @@ def materialize(repository: Repository, destination: Path) -> None:
         raise RepositoryError(f"failed to check out {repository.display_name}") from exc
 
 
-def materialize_plan_inputs(repository: Repository, destination: Path) -> None:
+def materialize_plan_inputs(
+    repository: Repository,
+    destination: Path,
+    component: str = ".",
+) -> None:
     """Materialize only committed files needed for deterministic plan detection."""
 
     _require("git")
     _validate_materialization(repository, destination)
+    component = normalize_component(component)
     try:
         with _isolated_git_environment(destination.parent) as environment:
             _initialize_materialization(repository, destination, environment)
-            if not _materialize_automatic_plan_inputs(
+            if component != ".":
+                _materialize_component_plan_inputs(
+                    repository,
+                    destination,
+                    environment,
+                    component,
+                )
+            elif not _materialize_automatic_plan_inputs(
                 repository,
                 destination,
                 environment,
@@ -926,12 +1142,14 @@ def materialize_plan_inputs(repository: Repository, destination: Path) -> None:
 def complete_materialization(
     repository: Repository,
     destination: Path,
+    component: str = ".",
 ) -> None:
-    """Expand a plan-only checkout to the complete immutable worktree."""
+    """Expand the selected immutable scope after plan detection."""
 
     _require("git")
     if not destination.is_dir():
         raise RepositoryError(f"checkout destination does not exist: {destination}")
+    component = normalize_component(component)
     try:
         with _isolated_git_environment(destination.parent) as environment:
             if not _commit_exists(
@@ -942,6 +1160,44 @@ def complete_materialization(
                 raise RepositoryError(
                     f"resolved commit is no longer available: {repository.display_name}"
                 )
-            _checkout_complete(repository, destination, environment)
+            if component == ".":
+                _checkout_complete(repository, destination, environment)
+            else:
+                if (
+                    _tree_object_type(
+                        repository,
+                        destination,
+                        environment,
+                        component,
+                    )
+                    != "tree"
+                ):
+                    raise RepositoryError(
+                        "component is not a committed repository directory: "
+                        f"{component}"
+                    )
+                run(
+                    [
+                        "git",
+                        "-C",
+                        str(destination),
+                        "update-ref",
+                        "--no-deref",
+                        "HEAD",
+                        repository.commit_sha,
+                    ],
+                    env=environment,
+                )
+                _checkout_paths(
+                    repository,
+                    destination,
+                    environment,
+                    (component,),
+                )
     except CommandError as exc:
-        raise RepositoryError(f"failed to check out {repository.display_name}") from exc
+        scope = (
+            repository.display_name
+            if component == "."
+            else f"{repository.display_name}:{component}"
+        )
+        raise RepositoryError(f"failed to check out {scope}") from exc

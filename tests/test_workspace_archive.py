@@ -113,6 +113,37 @@ def test_workspace_archive_reads_exact_commit_not_modified_worktree(
     assert "name='modified'" not in value
 
 
+def test_workspace_archive_can_limit_contents_to_one_component(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    component = git_repository / "apps" / "web"
+    component.mkdir(parents=True)
+    (component / "package.json").write_text("{}\n", encoding="utf-8")
+    (component / "source.js").write_text("export const value = 1;\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    _commit(git_repository, "add component")
+    destination = tmp_path / "component.tar"
+
+    create_workspace_archive(
+        git_repository,
+        destination,
+        _commit_sha(git_repository),
+        component="apps/web",
+    )
+
+    with tarfile.open(destination) as archive:
+        names = archive.getnames()
+    assert names == [
+        "apps/web/package.json",
+        "apps/web/source.js",
+    ]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Git stores symlinks as files on Windows")
 def test_workspace_archive_preserves_committed_symlink(
     git_repository: Path,

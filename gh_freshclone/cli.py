@@ -103,6 +103,14 @@ def _parser() -> argparse.ArgumentParser:
         help="quick baseline, repository-default reproduction, or full checks",
     )
     plan.add_argument(
+        "--component",
+        default=".",
+        help=(
+            "explicit repository-relative component directory "
+            "(default: repository root)"
+        ),
+    )
+    plan.add_argument(
         "--test-network",
         choices=TEST_NETWORK_POLICIES,
         default="none",
@@ -132,6 +140,14 @@ def _parser() -> argparse.ArgumentParser:
         choices=PROFILES,
         default="quick",
         help="quick baseline (default), reproduce, or full",
+    )
+    check.add_argument(
+        "--component",
+        default=".",
+        help=(
+            "explicit repository-relative component directory "
+            "(default: repository root)"
+        ),
     )
     check.add_argument(
         "--test-network",
@@ -217,6 +233,8 @@ def _print_plan(plan: BaselinePlan) -> None:
     print(f"Commit:     {repo.commit_sha}")
     print(f"Ref:        {repo.ref}")
     print(f"Profile:    {plan.profile}")
+    if plan.component != ".":
+        print(f"Component:  {plan.component}")
     if not plan.steps:
         print("Checks:     none")
     for index, step in enumerate(plan.steps, start=1):
@@ -515,6 +533,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.ref,
                 profile=args.profile,
                 test_network=args.test_network,
+                component=args.component,
             )
             if args.json:
                 print(json.dumps(plan.to_dict(), ensure_ascii=True, indent=2))
@@ -540,6 +559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 echo=not args.quiet and not args.json,
                 profile=args.profile,
                 test_network=args.test_network,
+                component=args.component,
             )
             receipt = outcome.receipt
             path = outcome.receipt_path

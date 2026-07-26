@@ -7,12 +7,13 @@ import json
 import re
 import shlex
 import tomllib
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from .configuration import CONFIG_NAME, ConfiguredStep, load_configuration
 from .constants import PROFILES
-from .model import BaselinePlan, CheckStep, Repository
+from .model import BaselinePlan, CheckStep, Repository, normalize_component
 
 DEFAULT_PYTHON_MINOR = 13
 DEFAULT_NODE_MAJOR = 24
@@ -2182,36 +2183,124 @@ def _cargo_workspace_owns(root: Path, manifest: Path) -> bool:
     return matches(members) and not matches(exclude_patterns)
 
 
+def _component_evidence(
+    component_root: Path,
+    component: PurePosixPath,
+    evidence: tuple[str, ...],
+) -> tuple[str, ...]:
+    scoped: list[str] = []
+    for value in evidence:
+        trailing_slash = value.endswith("/")
+        candidate_value = value.rstrip("/")
+        candidate = PurePosixPath(candidate_value)
+        path = component_root.joinpath(*candidate.parts)
+        if (
+            candidate_value
+            and not candidate.is_absolute()
+            and ".." not in candidate.parts
+            and path.exists()
+        ):
+            selected = (component / candidate).as_posix()
+            scoped.append(f"{selected}/" if trailing_slash else selected)
+        else:
+            scoped.append(value)
+    return tuple(scoped)
+
+
+def _scope_component_plan(
+    plan: BaselinePlan,
+    component_root: Path,
+    component: str,
+) -> BaselinePlan:
+    if component == ".":
+        return replace(plan, component=component)
+    prefix = PurePosixPath(component)
+    steps: list[CheckStep] = []
+    for step in plan.steps:
+        digest = hashlib.sha256()
+        digest.update(b"gh-freshclone-component-dependencies-v1\0")
+        digest.update(component.encode())
+        digest.update(b"\0")
+        digest.update(step.dependency_fingerprint.encode())
+        working_directory = (
+            prefix
+            if step.working_directory == "."
+            else prefix / PurePosixPath(step.working_directory)
+        )
+        steps.append(
+            replace(
+                step,
+                evidence=_component_evidence(
+                    component_root,
+                    prefix,
+                    step.evidence,
+                ),
+                dependency_fingerprint=digest.hexdigest(),
+                working_directory=working_directory.as_posix(),
+            )
+        )
+    return replace(
+        plan,
+        steps=tuple(steps),
+        warnings=(
+            f"Operator-selected component scope: {component}",
+            *plan.warnings,
+        ),
+        component=component,
+    )
+
+
 def detect_plan(
     repository: Repository,
     root: Path,
     profile: str = "quick",
+    *,
+    component: str = ".",
 ) -> BaselinePlan:
     if profile not in PROFILES:
         raise ValueError(f"unknown profile: {profile}")
-    _reject_escaping_root_inputs(root)
-    configured = load_configuration(root)
+    component = normalize_component(component)
+    repository_root = root.resolve()
+    component_path = PurePosixPath(component)
+    component_root = repository_root.joinpath(*component_path.parts)
+    try:
+        resolved_component = component_root.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"component is not an existing repository directory: {component}") from exc
+    if (
+        not resolved_component.is_relative_to(repository_root)
+        or not resolved_component.is_dir()
+        or component_root.is_symlink()
+    ):
+        raise ValueError(f"component is not an existing repository directory: {component}")
+    component_root = resolved_component
+    _reject_escaping_root_inputs(component_root)
+    configured = load_configuration(component_root)
     if configured is not None:
-        return _configured_plan(repository, root, profile, configured)
+        return _scope_component_plan(
+            _configured_plan(repository, component_root, profile, configured),
+            component_root,
+            component,
+        )
     steps: list[CheckStep] = []
     warnings: list[str] = []
 
-    rust, rust_warnings = _detect_rust(root, profile)
-    node, node_warnings = _detect_node(root, profile)
-    python, python_warnings = _detect_python(root, profile)
-    go = _detect_go(root)
-    maven = _detect_maven(root, profile)
-    gradle, gradle_warnings = _detect_gradle(root, profile)
-    ruby, ruby_warnings = _detect_ruby(root, profile)
-    php, php_warnings = _detect_php(root, profile)
-    cmake, cmake_warnings = _detect_cmake(root, profile)
-    make, make_warnings = _detect_make(root, profile)
-    dotnet, dotnet_warnings = _detect_dotnet(root, profile)
+    rust, rust_warnings = _detect_rust(component_root, profile)
+    node, node_warnings = _detect_node(component_root, profile)
+    python, python_warnings = _detect_python(component_root, profile)
+    go = _detect_go(component_root)
+    maven = _detect_maven(component_root, profile)
+    gradle, gradle_warnings = _detect_gradle(component_root, profile)
+    ruby, ruby_warnings = _detect_ruby(component_root, profile)
+    php, php_warnings = _detect_php(component_root, profile)
+    cmake, cmake_warnings = _detect_cmake(component_root, profile)
+    make, make_warnings = _detect_make(component_root, profile)
+    dotnet, dotnet_warnings = _detect_dotnet(component_root, profile)
     if cmake:
         make = None
         make_warnings = []
     if maven and gradle and profile != "full":
-        if (root / "mvnw").is_file():
+        if (component_root / "mvnw").is_file():
             selected_java = "Maven"
             gradle = None
         else:
@@ -2256,10 +2345,11 @@ def detect_plan(
         )
     nested = sorted(
         {
-            path.relative_to(root).as_posix()
+            path.relative_to(component_root).as_posix()
             for marker in NESTED_MANIFEST_NAMES
-            for path in root.glob(f"*/*/{marker}")
-            if marker != "Cargo.toml" or not _cargo_workspace_owns(root, path)
+            for path in component_root.glob(f"*/*/{marker}")
+            if marker != "Cargo.toml"
+            or not _cargo_workspace_owns(component_root, path)
         }
     )
     if nested:
@@ -2268,9 +2358,13 @@ def detect_plan(
             ".gh-freshclone.toml steps if they need separate baselines: "
             + ", ".join(nested[:5])
         )
-    return BaselinePlan(
-        repository=repository,
-        steps=tuple(steps),
-        profile=profile,
-        warnings=tuple(warnings),
+    return _scope_component_plan(
+        BaselinePlan(
+            repository=repository,
+            steps=tuple(steps),
+            profile=profile,
+            warnings=tuple(warnings),
+        ),
+        component_root,
+        component,
     )

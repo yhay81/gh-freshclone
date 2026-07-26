@@ -93,6 +93,56 @@ def test_pass_index_is_available_without_rebuilding_plan(
     )
 
 
+def test_pass_indexes_are_isolated_by_component(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    root_plan = _plan()
+    component_plan = replace(
+        root_plan,
+        component="apps/web",
+        steps=(
+            replace(root_plan.steps[0], working_directory="apps/web"),
+        ),
+    )
+    for plan in (root_plan, component_plan):
+        path = receipt_path(plan, "docker", _LIMITS)
+        write_receipt(
+            path,
+            Receipt(
+                created_at="2026-07-25T00:00:00+00:00",
+                status="pass",
+                runner="docker",
+                runner_version="Docker 29",
+                host_platform="test",
+                plan=plan,
+                resource_limits=_LIMITS,
+            ),
+        )
+
+    root = read_indexed_pass_receipt(
+        root_plan.repository,
+        root_plan.profile,
+        "docker",
+        _LIMITS,
+        component=".",
+    )
+    component = read_indexed_pass_receipt(
+        root_plan.repository,
+        root_plan.profile,
+        "docker",
+        _LIMITS,
+        component="apps/web",
+    )
+
+    assert root is not None
+    assert component is not None
+    assert root[0]["plan"]["component"] == "."
+    assert component[0]["plan"]["component"] == "apps/web"
+    assert root[1] != component[1]
+
+
 def test_pass_index_hit_refreshes_evidence_lru(
     monkeypatch,
     tmp_path: Path,
@@ -455,7 +505,7 @@ def test_prepared_volume_is_scoped_to_public_policy_versions() -> None:
     name = prepared_volume_name(plan.repository, plan.steps[0], plan.profile)
 
     assert name.startswith("ghfc-")
-    assert "-p9-e21" in name
+    assert "-p10-e21" in name
 
 
 def test_prepared_volume_is_scoped_to_step_working_directory() -> None:

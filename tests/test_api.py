@@ -55,6 +55,32 @@ def test_probe_repository_records_end_to_end_elapsed_time(
     assert outcome.cached is False
 
 
+def test_plan_repository_forwards_component_scope(monkeypatch) -> None:
+    observed: list[str] = []
+
+    def fake_create_plan(*args, **kwargs):
+        observed.append(kwargs["component"])
+        return BaselinePlan(
+            repository=Repository(
+                display_name="owner/repo",
+                commit_sha="a" * 40,
+                ref="main",
+                source_url=None,
+                github_repository="owner/repo",
+                local_path=None,
+            ),
+            steps=(),
+            component=kwargs["component"],
+        )
+
+    monkeypatch.setattr(workflow, "create_plan", fake_create_plan)
+
+    plan = api.plan_repository("owner/repo", component="apps/web")
+
+    assert plan.component == "apps/web"
+    assert observed == ["apps/web"]
+
+
 def test_bundled_receipt_schema_matches_current_version() -> None:
     schema = receipt_schema()
 
@@ -62,7 +88,7 @@ def test_bundled_receipt_schema_matches_current_version() -> None:
     assert schema["properties"]["execution_policy_version"]["type"] == "integer"
     assert schema["$defs"]["plan"]["properties"]["plan_version"]["type"] == "integer"
     assert EXECUTION_POLICY_VERSION == 21
-    assert PLAN_VERSION == 9
+    assert PLAN_VERSION == 10
 
 
 def test_current_receipt_serialization_validates_against_bundled_schema() -> None:

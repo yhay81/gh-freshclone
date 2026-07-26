@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -99,9 +100,9 @@ def test_check_writes_and_reuses_passing_receipt(
     original_materialize = workflow.materialize_plan_inputs
     materializations: list[Path] = []
 
-    def tracking_materialize(repository, destination):
+    def tracking_materialize(repository, destination, component="."):
         materializations.append(destination)
-        original_materialize(repository, destination)
+        original_materialize(repository, destination, component)
 
     monkeypatch.setattr(
         "gh_freshclone.workflow.materialize_plan_inputs",
@@ -360,6 +361,77 @@ def test_check_mounts_only_committed_files(
     assert receipt.status == "pass"
 
 
+def test_check_executes_only_the_selected_component_from_the_full_checkout(
+    monkeypatch,
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    component = git_repository / "apps" / "web"
+    component.mkdir(parents=True)
+    (component / "package.json").write_text(
+        '{"scripts":{"test":"node --test"}}\n',
+        encoding="utf-8",
+    )
+    (component / "package-lock.json").write_text(
+        '{"lockfileVersion":3}\n',
+        encoding="utf-8",
+    )
+    (component / "source.js").write_text("export const value = 1;\n", encoding="utf-8")
+    (component / "test").mkdir()
+    (component / "test" / "source.test.js").write_text(
+        "import assert from 'node:assert';\nassert.equal(1, 1);\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "add component",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(
+        "gh_freshclone.workflow.select_runner",
+        lambda requested: "docker",
+    )
+
+    def fake_run_step(runner, step, workspace, log_path, **kwargs):
+        assert step.ecosystem == "node"
+        assert step.working_directory == "apps/web"
+        assert (workspace / "apps" / "web" / "source.js").is_file()
+        assert not (workspace / "pyproject.toml").exists()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("ok\n", encoding="utf-8")
+        return RunnerExecution(0, 0.1, "ok")
+
+    monkeypatch.setattr("gh_freshclone.workflow.run_step", fake_run_step)
+
+    receipt, _, _ = check_repository(
+        str(git_repository),
+        component="apps/web",
+        use_cache=False,
+        echo=False,
+    )
+
+    assert receipt.status == "pass"
+    assert receipt.plan.component == "apps/web"
+    assert [step.ecosystem for step in receipt.plan.steps] == ["node"]
+
+
 def test_docker_reuses_readonly_checkout_without_host_copy(
     monkeypatch,
     git_repository: Path,
@@ -373,9 +445,9 @@ def test_docker_reuses_readonly_checkout_without_host_copy(
     original_materialize = workflow.materialize_plan_inputs
     canonical_checkout: list[Path] = []
 
-    def tracking_materialize(repository, destination):
+    def tracking_materialize(repository, destination, component="."):
         canonical_checkout.append(destination)
-        original_materialize(repository, destination)
+        original_materialize(repository, destination, component)
 
     monkeypatch.setattr(
         "gh_freshclone.workflow.materialize_plan_inputs",
@@ -417,7 +489,7 @@ def test_check_falls_back_to_readonly_bind_copy_when_archive_is_unsafe(
         lambda requested: "docker",
     )
 
-    def reject_archive(workspace, destination, commit_sha):
+    def reject_archive(workspace, destination, commit_sha, *, component="."):
         raise WorkspaceArchiveError("non-portable path")
 
     def fake_run_step(runner, step, workspace, log_path, **kwargs):

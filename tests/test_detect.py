@@ -437,6 +437,57 @@ def test_dependency_fingerprint_changes_with_lockfile(tmp_path: Path) -> None:
     assert first != second
 
 
+def test_operator_selected_component_scopes_detection_and_execution(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"test": "echo root must not run"}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+    fingerprints: list[str] = []
+    for component in ("apps/web", "apps/api"):
+        root = tmp_path.joinpath(*component.split("/"))
+        root.mkdir(parents=True)
+        (root / "package.json").write_text(
+            json.dumps({"scripts": {"test": "node --test"}}),
+            encoding="utf-8",
+        )
+        (root / "package-lock.json").write_text(
+            '{"lockfileVersion": 3}',
+            encoding="utf-8",
+        )
+        (root / "test").mkdir()
+        plan = detect_plan(
+            _repository(),
+            tmp_path,
+            component=component,
+        )
+        step = plan.steps[0]
+        fingerprints.append(step.dependency_fingerprint)
+        assert plan.component == component
+        assert step.working_directory == component
+        assert step.evidence == (
+            f"{component}/package.json",
+            "scripts.test",
+            f"{component}/package-lock.json",
+        )
+        assert plan.warnings[0] == f"Operator-selected component scope: {component}"
+
+    assert fingerprints[0] != fingerprints[1]
+
+
+@pytest.mark.parametrize("component", ["missing", "package.json"])
+def test_component_must_be_an_existing_directory(
+    tmp_path: Path,
+    component: str,
+) -> None:
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="existing repository directory"):
+        detect_plan(_repository(), tmp_path, component=component)
+
+
 def test_detects_pnpm_with_corepack(tmp_path: Path) -> None:
     (tmp_path / "package.json").write_text(
         json.dumps(
