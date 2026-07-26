@@ -898,7 +898,11 @@ def test_phase_log_is_bounded_while_process_output_is_drained(
     assert "output truncated at 256 bytes" in log_path.read_text(encoding="utf-8")
 
 
-def test_phase_detail_preserves_early_gradle_network_diagnostic(tmp_path: Path) -> None:
+def test_phase_detail_preserves_early_gradle_network_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(runners, "_stop_execution", lambda *args: None)
     script = (
         "print('java.net.UnknownHostException: services.gradle.org'); "
         "[print(f'ordinary output {index}') for index in range(30)]; "
