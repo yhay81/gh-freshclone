@@ -601,3 +601,29 @@ network-enabled restore deterministically failed because repository policy
 treats `NU1903` as an error and a pinned cryptography package matched five
 current high-severity advisories. The app retried once from a clean volume,
 observed the same failure, and discarded the failed preparation state.
+
+## Exact workspace archive follow-up — 2026-07-26
+
+The next unsupported-ecosystem trial exposed a cross-cutting transport
+bottleneck before dependency preparation began. A fixed
+`phpstan/phpstan-src@e68b4013a0c4c4ab3d9c208e5b07254471771a4d`
+checkout contains 8,517 tracked files. Copying those files individually from
+the Windows host through Docker Desktop's bind boundary was still running
+after 124 seconds, both with and without the `.git` object directory.
+
+The replacement transport enumerates the exact commit tree and streams blobs
+through one `git cat-file --batch` process into a deterministic POSIX tar. It
+does not read working-tree file bodies, so line-ending conversion, a modified
+tracked file, and untracked dependency outputs cannot change the container
+input. Executable modes, symbolic links, and the commit timestamp are retained.
+Every phase extracts the same single read-only archive. A minimal writable
+`.git` directory copies only HEAD, index, refs, and configuration, then uses
+Git's alternates mechanism to read objects from the original read-only input.
+
+The exact archive was 26.52 MiB and took 1.224 seconds to build. Extracting all
+8,517 paths, reconstructing Git metadata, resolving the same commit, and
+enumerating the same index took 2.681 seconds. The combined 3.905-second setup
+is at least 96.8% faster than the observed per-file copy lower bound. A
+deliberately generic filesystem archive reached 156.44 MiB because it included
+an untracked partial `vendor/` tree; the exact Git-object archive excluded that
+state, providing a security improvement as well as the performance gain.

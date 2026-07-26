@@ -380,6 +380,7 @@ def build_runner_command(
     image_identity: str | None = None,
     command_text: str | None = None,
     network_enabled: bool = True,
+    workspace_archive: Path | None = None,
 ) -> list[str]:
     """Build a no-secret, resource-limited OCI invocation."""
 
@@ -388,6 +389,9 @@ def build_runner_command(
     selected_image = image_identity or step.image
     _validate_image_reference(selected_image)
     workspace = workspace.resolve()
+    resolved_archive = workspace_archive.resolve() if workspace_archive else None
+    if resolved_archive is not None and not resolved_archive.is_file():
+        raise RunnerError(f"workspace archive does not exist: {resolved_archive}")
     resolved_cache = (
         cache_dir.resolve()
         if (
@@ -429,9 +433,28 @@ def build_runner_command(
             f"&& ln -s /prepared/node_modules "
             f"{quoted_working_directory}/node_modules "
         )
+    if resolved_archive is None:
+        workspace_setup = (
+            'mkdir -p "$HOME" /workspace /cache '
+            "&& cp -R /input/. /workspace/ "
+        )
+    else:
+        workspace_setup = (
+            'mkdir -p "$HOME" /workspace /cache '
+            "&& tar -xf /input.tar -C /workspace "
+            "&& mkdir -p /workspace/.git/objects/info /workspace/.git/info "
+            "&& for item in HEAD config index packed-refs shallow; do "
+            'if [ -f "/input/.git/$item" ]; then '
+            'cp "/input/.git/$item" "/workspace/.git/$item"; fi; done '
+            "&& if [ -d /input/.git/refs ]; then "
+            "cp -R /input/.git/refs /workspace/.git/refs; fi "
+            "&& if [ -f /input/.git/info/exclude ]; then "
+            "cp /input/.git/info/exclude /workspace/.git/info/exclude; fi "
+            "&& printf '%s\\n' /input/.git/objects "
+            "> /workspace/.git/objects/info/alternates "
+        )
     shell_command = (
-        'mkdir -p "$HOME" /workspace /cache '
-        "&& cp -R /input/. /workspace/ "
+        workspace_setup
         + prepared_setup
         + f"&& cd {quoted_working_directory} && "
         + (step.command if command_text is None else command_text)
@@ -459,6 +482,11 @@ def build_runner_command(
             "--workdir=/",
             "--entrypoint=sh",
         ]
+        if resolved_archive is not None:
+            command.append(
+                f"--mount=type=bind,source={resolved_archive},"
+                "target=/input.tar,readonly"
+            )
         if not network_enabled:
             command.append("--network=none")
         command.extend(
@@ -526,6 +554,13 @@ def build_runner_command(
             "--entrypoint",
             "sh",
         ]
+        if resolved_archive is not None:
+            command.extend(
+                (
+                    "--mount",
+                    f"type=bind,source={resolved_archive},target=/input.tar,readonly",
+                )
+            )
         if not network_enabled:
             command.extend(("--network", "none"))
         for value in _cache_environment(
@@ -780,6 +815,7 @@ def _run_step_phases(
     image_identity: str,
     cache_key: str,
     prepare_marker_paths: tuple[str, ...],
+    workspace_archive: Path | None,
     reset_log: bool = True,
 ) -> RunnerExecution:
     execution_id = uuid.uuid4().hex[:12]
@@ -812,6 +848,7 @@ def _run_step_phases(
                     prepare_marker_paths,
                 ),
                 network_enabled=True,
+                workspace_archive=workspace_archive,
             ),
             container_name=f"gh-freshclone-{execution_id}-prepare",
             log_path=log_path,
@@ -840,6 +877,7 @@ def _run_step_phases(
                 image_identity=image_identity,
                 command_text=step.command,
                 network_enabled=step.test_network == "enabled",
+                workspace_archive=workspace_archive,
             ),
             container_name=f"gh-freshclone-{execution_id}-test",
             log_path=log_path,
@@ -944,6 +982,7 @@ def run_step(
     echo: bool = True,
     cache_dir: Path | None = None,
     prepared_volume: str | None = None,
+    workspace_archive: Path | None = None,
 ) -> RunnerExecution:
     image_identity = resolve_image_identity(runner, step.image)
     cache_key = execution_cache_key(step, image_identity)
@@ -1012,6 +1051,7 @@ def run_step(
             image_identity=image_identity,
             cache_key=cache_key,
             prepare_marker_paths=prepare_marker_paths,
+            workspace_archive=workspace_archive,
         )
         if execution.returncode != 0 and execution.failed_phase == "prepare":
             discarded, message = _discard_failed_preparation(
@@ -1055,6 +1095,7 @@ def run_step(
                     image_identity=image_identity,
                     cache_key=cache_key,
                     prepare_marker_paths=prepare_marker_paths,
+                    workspace_archive=workspace_archive,
                     reset_log=False,
                 )
                 execution = replace(

@@ -230,6 +230,7 @@ def _check_resolved_repository(
     )
     from .detect import detect_plan
     from .diagnostics import diagnose_failure
+    from .workspace_archive import WorkspaceArchiveError, create_workspace_archive
 
     try:
         ensure_storage_reserve()
@@ -263,6 +264,20 @@ def _check_resolved_repository(
 
         evidence_locks.enter_context(cache_path_lock(destination))
         complete_materialization(repository, checkout)
+        workspace_archive = temporary_root / "workspace.tar"
+        try:
+            create_workspace_archive(
+                checkout,
+                workspace_archive,
+                repository.commit_sha,
+            )
+        except WorkspaceArchiveError as exc:
+            workspace_archive = None
+            if echo:
+                print(
+                    "gh-freshclone: workspace archive unavailable; "
+                    f"using bind copy ({exc})"
+                )
         results: list[StepResult] = []
         last_execution: RunnerExecution | None = None
         prepared_volumes_changed = False
@@ -295,6 +310,7 @@ def _check_resolved_repository(
                 echo=echo,
                 cache_dir=cache_path,
                 prepared_volume=volume_name,
+                workspace_archive=workspace_archive,
             )
             last_execution = execution
             prepared_volumes_changed = prepared_volumes_changed or bool(

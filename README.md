@@ -56,7 +56,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.12.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.13.0"
 gh-freshclone doctor
 ```
 
@@ -222,6 +222,14 @@ initialization failures as a JSON error envelope on standard output:
   declared digest can run from verified local content without a registry
   round trip.
 - Lockfiles and relevant manifests form a dependency fingerprint.
+- Before any container starts, the exact committed Git tree is streamed from
+  Git objects into one deterministic tar archive. Each prepare/test container
+  extracts that single read-only input instead of copying thousands of host
+  files through a VM bind mount. File modes, symlinks, and commit timestamps
+  are preserved; untracked files and modified working-tree content cannot
+  enter the archive. A small writable `.git` index/ref layer points at the
+  original checkout's read-only object database, retaining ordinary Git
+  metadata without duplicating its packs.
 - Go reuses module and build caches but compiles `go test -count=1`, so a
   fresh proof cannot silently reuse a previous successful test result.
 - Maven and Gradle reuse repository-, image-, and dependency-scoped
@@ -462,8 +470,9 @@ Repository tests execute untrusted code. `gh-freshclone` therefore:
   materialization;
 - never forwards `GH_TOKEN`, `GITHUB_TOKEN`, SSH agents, Git configuration, or
   the broad host environment;
-- gives the test a disposable workspace copied from `/input` inside the
-  container;
+- gives each phase a disposable workspace extracted from one exact-commit
+  archive, with a compatibility fallback to the read-only `/input` copy only
+  when the committed tree cannot be represented portably;
 - mounts `/input` read-only with every supported runner;
 - mounts only repository-scoped dependency caches;
 - runs dependency preparation with network access, exits that container, and
