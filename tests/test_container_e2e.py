@@ -1088,3 +1088,98 @@ dependency_files = ["package.json", "pnpm-lock.yaml"]
         assert repeated.results[0].prepare_cache_hit is True
     finally:
         _cleanup_test_volumes()
+
+
+def test_native_runner_executes_an_automatic_component_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "component-repository"
+    application = repository / "apps" / "web"
+    tests = application / "test"
+    tests.mkdir(parents=True)
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repository)],
+        check=True,
+        capture_output=True,
+    )
+    package = {
+        "name": "freshclone-component-e2e",
+        "version": "1.0.0",
+        "private": True,
+        "scripts": {"test": "node --test"},
+    }
+    (application / "package.json").write_text(
+        json.dumps(package),
+        encoding="utf-8",
+    )
+    (application / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "name": package["name"],
+                "version": package["version"],
+                "lockfileVersion": 3,
+                "requires": True,
+                "packages": {
+                    "": {
+                        "name": package["name"],
+                        "version": package["version"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tests / "component.test.mjs").write_text(
+        "import test from 'node:test';\n"
+        "import assert from 'node:assert/strict';\n"
+        "test('component cwd', () => {\n"
+        "  assert.equal(process.cwd().endsWith('/apps/web'), true);\n"
+        "});\n",
+        encoding="utf-8",
+    )
+    (repository / "README.md").write_text(
+        "The repository root intentionally has no baseline.\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setenv(
+        "GH_FRESHCLONE_CACHE",
+        str(tmp_path / "component-e2e-cache"),
+    )
+    try:
+        receipt, _, _ = check_repository(
+            str(repository),
+            runner=E2E_RUNNER,
+            component="apps/web",
+            use_cache=False,
+            echo=True,
+        )
+
+        assert isinstance(receipt, Receipt)
+        assert receipt.status == "pass", receipt.to_dict()
+        assert receipt.plan.component == "apps/web"
+        assert receipt.plan.steps[0].working_directory == "apps/web"
+        assert receipt.results[0].test_network == "none"
+    finally:
+        _cleanup_test_volumes()

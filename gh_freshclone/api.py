@@ -49,6 +49,7 @@ def plan_repository(
     *,
     profile: str = "quick",
     test_network: str = "none",
+    component: str = ".",
 ) -> BaselinePlan:
     """Compile a GitHub or local Git target into a deterministic baseline plan."""
 
@@ -59,6 +60,7 @@ def plan_repository(
         ref,
         profile=profile,
         test_network=test_network,
+        component=component,
     )
 
 
@@ -68,6 +70,7 @@ def compile_materialized_checkout(
     *,
     profile: str = "quick",
     test_network: str = "none",
+    component: str = ".",
 ) -> BaselinePlan:
     """Compile an already materialized exact checkout without executing its code.
 
@@ -81,7 +84,12 @@ def compile_materialized_checkout(
     from .workflow import _apply_test_network_policy
 
     return _apply_test_network_policy(
-        detect_plan(repository, checkout.resolve(), profile),
+        detect_plan(
+            repository,
+            checkout.resolve(),
+            profile,
+            component=component,
+        ),
         test_network,
     )
 
@@ -97,6 +105,7 @@ def probe_repository(
     echo: bool = True,
     profile: str = "quick",
     test_network: str = "none",
+    component: str = ".",
 ) -> ProbeOutcome:
     """Compile and execute a baseline, returning a versioned typed outcome."""
 
@@ -113,6 +122,7 @@ def probe_repository(
         echo=echo,
         profile=profile,
         test_network=test_network,
+        component=component,
     )
     return ProbeOutcome(
         receipt=receipt,

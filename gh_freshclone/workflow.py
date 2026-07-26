@@ -9,7 +9,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .constants import TEST_NETWORK_POLICIES
-from .model import BaselinePlan, Receipt, Repository, ResourceLimits, StepResult
+from .model import (
+    BaselinePlan,
+    Receipt,
+    Repository,
+    ResourceLimits,
+    StepResult,
+    normalize_component,
+)
 from .receipts import (
     dependency_cache_path,
     prepared_volume_name,
@@ -54,16 +61,24 @@ def materialize(repository: Repository, destination: Path) -> None:
     implementation(repository, destination)
 
 
-def materialize_plan_inputs(repository: Repository, destination: Path) -> None:
+def materialize_plan_inputs(
+    repository: Repository,
+    destination: Path,
+    component: str = ".",
+) -> None:
     from .github import materialize_plan_inputs as implementation
 
-    implementation(repository, destination)
+    implementation(repository, destination, component)
 
 
-def complete_materialization(repository: Repository, destination: Path) -> None:
+def complete_materialization(
+    repository: Repository,
+    destination: Path,
+    component: str = ".",
+) -> None:
     from .github import complete_materialization as implementation
 
-    implementation(repository, destination)
+    implementation(repository, destination, component)
 
 
 def run_step(*args: Any, **kwargs: Any) -> RunnerExecution:
@@ -78,18 +93,25 @@ def create_plan(
     *,
     profile: str = "quick",
     test_network: str = "none",
+    component: str = ".",
 ) -> BaselinePlan:
     from .detect import detect_plan
 
+    component = normalize_component(component)
     repository = resolve_repository(target, ref)
     with tempfile.TemporaryDirectory(
         prefix="gh-freshclone-plan-",
         ignore_cleanup_errors=True,
     ) as temporary:
         checkout = Path(temporary) / "source"
-        materialize_plan_inputs(repository, checkout)
+        materialize_plan_inputs(repository, checkout, component)
         return _apply_test_network_policy(
-            detect_plan(repository, checkout, profile),
+            detect_plan(
+                repository,
+                checkout,
+                profile,
+                component=component,
+            ),
             test_network,
         )
 
@@ -136,10 +158,12 @@ def check_repository(
     echo: bool = True,
     profile: str = "quick",
     test_network: str = "none",
+    component: str = ".",
 ) -> tuple[Receipt | dict, Path, bool]:
     if test_network not in TEST_NETWORK_POLICIES:
         choices = ", ".join(TEST_NETWORK_POLICIES)
         raise ValueError(f"test_network must be one of: {choices}")
+    component = normalize_component(component)
     resource_limits = ResourceLimits(cpus=cpus, memory=memory)
     selected_runner = preferred_runner(runner)
     validate_runner_limits(
@@ -155,6 +179,7 @@ def check_repository(
             selected_runner,
             resource_limits,
             test_network,
+            component,
         )
     ):
         receipt, path = indexed
@@ -175,6 +200,7 @@ def check_repository(
                 selected_runner,
                 resource_limits,
                 test_network,
+                component,
             )
         ):
             receipt, path = indexed
@@ -187,7 +213,8 @@ def check_repository(
     lock_key = (
         f"{repository.display_name}\0{repository.commit_sha}\0"
         f"{profile}\0{selected_runner}\0"
-        f"{resource_limits.cpus:g}\0{resource_limits.memory}\0{test_network}"
+        f"{resource_limits.cpus:g}\0{resource_limits.memory}\0{test_network}\0"
+        f"{component}"
     )
     with cache_lock(lock_key):
         if use_cache and (
@@ -197,6 +224,7 @@ def check_repository(
                 selected_runner,
                 resource_limits,
                 test_network,
+                component,
             )
         ):
             receipt, path = indexed
@@ -209,6 +237,7 @@ def check_repository(
             echo=echo,
             profile=profile,
             test_network=test_network,
+            component=component,
         )
 
 
@@ -221,6 +250,7 @@ def _check_resolved_repository(
     echo: bool,
     profile: str,
     test_network: str,
+    component: str,
 ) -> tuple[Receipt | dict, Path, bool]:
     from .cache import (
         CacheSpaceError,
@@ -243,9 +273,14 @@ def _check_resolved_repository(
     ) as temporary, ExitStack() as evidence_locks:
         temporary_root = Path(temporary)
         checkout = temporary_root / "source"
-        materialize_plan_inputs(repository, checkout)
+        materialize_plan_inputs(repository, checkout, component)
         plan = _apply_test_network_policy(
-            detect_plan(repository, checkout, profile),
+            detect_plan(
+                repository,
+                checkout,
+                profile,
+                component=component,
+            ),
             test_network,
         )
         if not plan.steps:
@@ -263,13 +298,14 @@ def _check_resolved_repository(
             return cached, destination, True
 
         evidence_locks.enter_context(cache_path_lock(destination))
-        complete_materialization(repository, checkout)
+        complete_materialization(repository, checkout, component)
         workspace_archive = temporary_root / "workspace.tar"
         try:
             create_workspace_archive(
                 checkout,
                 workspace_archive,
                 repository.commit_sha,
+                component=component,
             )
         except WorkspaceArchiveError as exc:
             workspace_archive = None

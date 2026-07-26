@@ -14,8 +14,9 @@ and missing environment capabilities.
 
 Automatic detection covers root-level Python, Node.js/Bun/Deno, Rust, Go,
 Maven, Gradle, Ruby/Bundler, Composer/PHPUnit, CMake, Make/configure, and .NET
-projects. A repository-owned configuration compiles explicit monorepo steps.
-The package is alpha software.
+projects. An operator can apply the same detector to one exact monorepo
+component, while a repository-owned configuration compiles fully custom
+steps. The package is alpha software.
 
 ## Why it exists
 
@@ -57,7 +58,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.16.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.17.0"
 gh-freshclone doctor
 ```
 
@@ -90,6 +91,7 @@ Inspect a plan without executing repository code:
 ```shell
 gh-freshclone plan pallets/itsdangerous
 gh-freshclone plan owner/repo --ref v1.2.3 --profile reproduce
+gh-freshclone plan owner/repo --component apps/web
 gh-freshclone plan https://github.com/owner/repo/pull/123
 gh-freshclone plan . --json
 ```
@@ -98,9 +100,11 @@ Automatic planning reads the immutable Git tree, then hydrates only the
 committed manifests and evidence files used by detection. It does not download
 the repository's source and test bodies. `check` expands that same
 credential-free checkout to the complete exact commit only after it has found
-an executable baseline. Repository-owned `.gh-freshclone.toml` configurations
-retain a complete checkout during planning because their declared step paths
-can intentionally reference arbitrary committed files.
+an executable baseline. With `--component`, planning hydrates only bounded
+inputs below that directory and execution expands only that component from
+the exact commit, avoiding unrelated monorepo I/O and host-incompatible paths.
+A component-owned `.gh-freshclone.toml` can reference arbitrary files inside
+that bounded component.
 
 Read the upstream GitHub CI state for the same exact commit without executing
 repository code:
@@ -118,6 +122,7 @@ gh-freshclone check pallets/itsdangerous
 gh-freshclone check https://github.com/owner/repo/commit/FULL_40_CHAR_SHA
 gh-freshclone check https://github.com/owner/repo/pull/123
 gh-freshclone check . --runner docker --cpus 4 --memory 8g
+gh-freshclone check owner/repo --component apps/web
 gh-freshclone check owner/repo --test-network enabled
 gh-freshclone check owner/repo --json
 ```
@@ -130,17 +135,17 @@ Profiles make the cost/coverage choice explicit:
 | `reproduce` | Repository-default contributor baseline | Default tox/test command |
 | `full` | Broad pre-submit confidence | All known scripts, features, or environments |
 
-The profile, preparation and test commands, operator-selected test-network
-policy, supporting manifest evidence, and dependency fingerprint are part of
-the plan digest. Test containers stay offline by default even when
+The component, profile, preparation and test commands, operator-selected
+test-network policy, supporting manifest evidence, and dependency fingerprint
+are part of the plan digest. Test containers stay offline by default even when
 repository-owned configuration requests network. `--test-network enabled` is
 the explicit operator opt-in that enables outbound access for every test step;
 the effective policy is visible in `plan`, receipts, and results. Offline and
 network-enabled PASS indexes are separate and cannot satisfy one another. A
 PASS is reused only for the same commit, plan version, execution policy,
-profile, runner, resources, and test-network policy. The index is checked
-before a new clone, so a known PASS normally returns in well under a second
-after commit resolution.
+component, profile, runner, resources, and test-network policy. The index is
+checked before a new clone, so a known PASS normally returns in well under a
+second after commit resolution.
 
 Use `--no-cache` when fresh execution evidence is required.
 When automation already knows a full 40-character commit SHA, pass it with
@@ -578,7 +583,30 @@ Current evidence sources include:
 
 Cargo members declared by a root workspace are covered by its
 `cargo test --workspace` step. Other nested manifests are reported as not
-auto-run rather than guessed. A monorepo can opt into explicit, reviewable compilation with
+auto-run rather than guessed. When an operator already knows the intended,
+self-contained boundary, `--component` applies the same automatic detector
+there without changing the target repository:
+
+```shell
+gh-freshclone plan dependabot/dependabot-core \
+  --ref 6c8bb8bd9cb7ec79c324bc550a992ab66201e76a \
+  --component npm_and_yarn/helpers
+gh-freshclone check dependabot/dependabot-core \
+  --ref 6c8bb8bd9cb7ec79c324bc550a992ab66201e76a \
+  --component npm_and_yarn/helpers \
+  --test-network enabled
+```
+
+Component paths are non-empty portable POSIX paths, cannot traverse outside
+the repository or enter `.git`, and must name a committed directory. The
+selected component becomes part of every plan and cache identity. Planning
+does not recursively guess components; the caller must supply the exact
+boundary. Execution materializes and archives only that component, preserving
+its repository-relative path and an exact detached `HEAD`. If a baseline
+needs files outside that directory, select a wider component or use a
+repository-owned root configuration.
+
+A monorepo can instead opt into multiple explicit, reviewable steps with
 `.gh-freshclone.toml`:
 
 ```toml
@@ -629,7 +657,14 @@ from gh_freshclone.api import (
 from gh_freshclone.integrations.tsumugi import outcome_to_tsumugi_flags
 from gh_freshclone.model import Repository
 
-outcome = probe_repository("pallets/itsdangerous", profile="quick", echo=False)
+outcome = probe_repository(
+    "dependabot/dependabot-core",
+    ref="6c8bb8bd9cb7ec79c324bc550a992ab66201e76a",
+    component="npm_and_yarn/helpers",
+    test_network="enabled",
+    profile="quick",
+    echo=False,
+)
 assert outcome.api_version == 1
 print(
     outcome.status,

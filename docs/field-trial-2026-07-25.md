@@ -739,3 +739,36 @@ skipped the large-data extension, and reported all tests successful. The test
 container had `test_network=none`, no preparation phase or prepared volume,
 plan v9, and execution policy v21. The resolved image identity was
 `buildpack-deps@sha256:5bfacbc6611775f980cf283fbc86b999517878d39723510687135a0d6366bbee`.
+
+## Operator-selected component follow-up — 2026-07-26
+
+The standing KAGARI trial exposed a different monorepo failure mode in the
+public GitHub Bug Bounty repository
+`dependabot/dependabot-core@6c8bb8bd9cb7ec79c324bc550a992ab66201e76a`.
+Its root is a large Ruby workspace whose lock is intentionally platform
+specific, while `npm_and_yarn/helpers` is a self-contained locked Node
+component with five Jest suites. Root-only detection correctly produced no
+safe plan, but requiring the upstream repository to add a tool-specific
+configuration would make an external pre-edit check impractical.
+
+The new operator-selected component scope applies the existing conservative
+detector at exactly one committed repository-relative directory. It does not
+search recursively or guess which package matters. Planning hydrates only
+bounded evidence below that component; execution then fetches, materializes,
+and archives only the complete selected component while retaining its full
+repository-relative path and exact detached commit. This also fixed a physical
+Windows failure where expanding unrelated paths from the entire Dependabot
+tree was impossible even though the intended component itself was portable.
+
+The default offline physical run reached all five suites and classified nine
+registry-dependent failures as a high-confidence `network_policy`
+environment gap after `registry.yarnpkg.com` resolution was denied. Repeating
+the exact commit with the caller's explicit `--test-network enabled` opt-in
+passed all five suites and 25 tests. The test phase took 13.248 seconds; an
+already verified prepared dependency volume was reused, and total end-to-end
+time including credential-free exact-commit materialization was 58.741
+seconds. The resolved multi-architecture image identity was
+`node@sha256:5711a0d445a1af54af9589066c646df387d1831a608226f4cd694fc59e745059`.
+The receipt recorded plan v10, execution policy v21, component
+`npm_and_yarn/helpers`, and the operator network override independently from
+the default offline cache identity.

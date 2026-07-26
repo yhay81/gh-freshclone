@@ -158,6 +158,66 @@ def test_test_network_policy_is_forwarded_by_plan_and_check(
     assert observed == [("plan", "enabled"), ("check", "enabled")]
 
 
+def test_component_scope_is_forwarded_by_plan_and_check(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    repository = Repository(
+        display_name="owner/repo",
+        commit_sha="a" * 40,
+        ref="main",
+        source_url=None,
+        github_repository="owner/repo",
+        local_path=None,
+    )
+    observed: list[tuple[str, str]] = []
+
+    def fake_plan(*args, **kwargs):
+        observed.append(("plan", kwargs["component"]))
+        return BaselinePlan(repository=repository, steps=())
+
+    def fake_probe(*args, **kwargs):
+        observed.append(("check", kwargs["component"]))
+        return ProbeOutcome(
+            receipt={"status": "pass", "plan": {"repository": {}}},
+            receipt_path=tmp_path / "receipt.json",
+            cached=False,
+        )
+
+    monkeypatch.setattr(cli, "create_plan", fake_plan)
+    monkeypatch.setattr(cli, "probe_repository", fake_probe)
+
+    assert (
+        cli.main(
+            [
+                "plan",
+                "owner/repo",
+                "--component",
+                "apps/web",
+                "--json",
+            ]
+        )
+        == 1
+    )
+    capsys.readouterr()
+    assert (
+        cli.main(
+            [
+                "check",
+                "owner/repo",
+                "--component",
+                "apps/web",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert observed == [("plan", "apps/web"), ("check", "apps/web")]
+
+
 def test_doctor_requires_git_and_a_ready_runner_but_not_github_auth(
     monkeypatch,
     capsys,

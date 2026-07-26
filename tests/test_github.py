@@ -105,6 +105,192 @@ def test_plan_materialization_expands_only_after_detection(
     assert actual == repository.commit_sha
 
 
+def test_plan_materialization_is_bounded_to_selected_component(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    component = git_repository / "apps" / "web"
+    component.mkdir(parents=True)
+    (component / "package.json").write_text(
+        '{"scripts":{"test":"node --test"}}\n',
+        encoding="utf-8",
+    )
+    (component / "package-lock.json").write_text(
+        '{"lockfileVersion":3}\n',
+        encoding="utf-8",
+    )
+    (component / "source.js").write_text("export const value = 1;\n", encoding="utf-8")
+    (component / "test").mkdir()
+    (component / "test" / "source.test.js").write_text(
+        "import assert from 'node:assert';\nassert.equal(1, 1);\n",
+        encoding="utf-8",
+    )
+    unrelated = git_repository / "apps" / "api"
+    unrelated.mkdir(parents=True)
+    (unrelated / "package.json").write_text("{}\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "add monorepo components",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    repository = resolve_repository(str(git_repository))
+    checkout = tmp_path / "component-checkout"
+
+    materialize_plan_inputs(repository, checkout, "apps/web")
+
+    assert (checkout / "apps" / "web" / "package.json").is_file()
+    assert (checkout / "apps" / "web" / "package-lock.json").is_file()
+    assert (checkout / "apps" / "web" / "test").is_dir()
+    assert not (checkout / "apps" / "web" / "source.js").exists()
+    assert not (checkout / "apps" / "web" / "test" / "source.test.js").exists()
+    assert not (checkout / "apps" / "api").exists()
+    assert not (checkout / "pyproject.toml").exists()
+
+    complete_materialization(repository, checkout, "apps/web")
+
+    assert (checkout / "apps" / "web" / "source.js").is_file()
+    assert not (checkout / "apps" / "api").exists()
+    assert not (checkout / "pyproject.toml").exists()
+    actual = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert actual == repository.commit_sha
+
+
+def test_component_configuration_materializes_its_bounded_custom_layout(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    component = git_repository / "tools" / "checker"
+    component.mkdir(parents=True)
+    (component / ".gh-freshclone.toml").write_text(
+        """
+version = 1
+[[steps]]
+ecosystem = "custom"
+image = "docker.io/library/alpine:3"
+command = "test -f fixtures/input.txt"
+dependency_files = ["fixtures/input.txt"]
+""".lstrip(),
+        encoding="utf-8",
+    )
+    fixture = component / "fixtures" / "input.txt"
+    fixture.parent.mkdir()
+    fixture.write_text("committed fixture\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "add component configuration",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    repository = resolve_repository(str(git_repository))
+    checkout = tmp_path / "configured-component"
+
+    materialize_plan_inputs(repository, checkout, "tools/checker")
+    plan = detect_plan(
+        repository,
+        checkout,
+        component="tools/checker",
+    )
+
+    assert (checkout / "tools" / "checker" / "fixtures" / "input.txt").is_file()
+    assert plan.component == "tools/checker"
+    assert plan.steps[0].working_directory == "tools/checker"
+    assert plan.steps[0].evidence[:2] == (
+        "tools/checker/.gh-freshclone.toml",
+        "tools/checker/fixtures/input.txt",
+    )
+    assert "config.steps[0]" in plan.steps[0].evidence
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit_value", "message"),
+    [
+        ("_MAX_COMPONENT_PLAN_FILES", 1, "committed files"),
+        ("_MAX_COMPONENT_PLAN_BYTES", 1, "MiB"),
+    ],
+)
+def test_component_configuration_fails_closed_at_materialization_limits(
+    monkeypatch,
+    git_repository: Path,
+    tmp_path: Path,
+    limit_name: str,
+    limit_value: int,
+    message: str,
+) -> None:
+    component = git_repository / "tools" / "checker"
+    component.mkdir(parents=True)
+    (component / ".gh-freshclone.toml").write_text(
+        "version = 1\n",
+        encoding="utf-8",
+    )
+    (component / "fixture.txt").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "add bounded component",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    repository = resolve_repository(str(git_repository))
+    monkeypatch.setattr(github, limit_name, limit_value)
+
+    with pytest.raises(github.RepositoryError, match=message):
+        materialize_plan_inputs(
+            repository,
+            tmp_path / f"bounded-{limit_name}",
+            "tools/checker",
+        )
+
+
 def test_plan_materialization_preserves_configured_layouts(
     git_repository: Path,
     tmp_path: Path,

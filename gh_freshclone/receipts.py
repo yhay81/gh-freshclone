@@ -17,6 +17,7 @@ from .model import (
     Receipt,
     Repository,
     ResourceLimits,
+    normalize_component,
 )
 
 _EVIDENCE_TOUCH_INTERVAL_SECONDS = 60 * 60
@@ -179,9 +180,12 @@ def _index_path(
     runner: str,
     resource_limits: ResourceLimits,
     test_network: str | None,
+    component: str = ".",
 ) -> Path:
     name = _repository_namespace(repository)
     context = execution_context_digest(runner, resource_limits)
+    component = normalize_component(component)
+    component_key = hashlib.sha256(component.encode()).hexdigest()[:12]
     network = (
         ""
         if test_network is None
@@ -189,7 +193,7 @@ def _index_path(
     )
     filename = (
         f"{repository.commit_sha}-{_safe_name(profile)}-{_safe_name(runner)}"
-        f"-{context[:12]}{network}-p{PLAN_VERSION}-"
+        f"-{context[:12]}{network}-c{component_key}-p{PLAN_VERSION}-"
         f"e{EXECUTION_POLICY_VERSION}.json"
     )
     return cache_root() / "indexes" / name / filename
@@ -253,11 +257,13 @@ def read_indexed_pass_receipt(
     runner: str,
     resource_limits: ResourceLimits,
     test_network: str = "none",
+    component: str = ".",
 ) -> tuple[dict, Path] | None:
     """Read a compatible PASS receipt before cloning the repository."""
 
     if test_network not in {"none", "enabled"}:
         return None
+    component = normalize_component(component)
     indexes = [
         _index_path(
             repository,
@@ -265,6 +271,7 @@ def read_indexed_pass_receipt(
             runner,
             resource_limits,
             test_network,
+            component,
         )
     ]
     if test_network == "none":
@@ -275,6 +282,7 @@ def read_indexed_pass_receipt(
                 runner,
                 resource_limits,
                 None,
+                component,
             )
         )
     for index in indexes:
@@ -319,6 +327,7 @@ def read_indexed_pass_receipt(
             and receipt.get("runner") == runner
             and plan.get("plan_version") == PLAN_VERSION
             and plan.get("profile") == profile
+            and plan.get("component") == component
             and repo.get("commit_sha") == repository.commit_sha
             and repo.get("display_name") == repository.display_name
             and receipt.get("resource_limits") == resource_limits.to_dict()
@@ -364,6 +373,7 @@ def write_receipt(path: Path, receipt: Receipt) -> None:
         receipt.runner,
         receipt.resource_limits,
         test_network,
+        receipt.plan.component,
     )
     _atomic_json(
         index,
@@ -371,6 +381,7 @@ def write_receipt(path: Path, receipt: Receipt) -> None:
             "receipt": resolved_path.relative_to(root).as_posix(),
             "commit_sha": receipt.plan.repository.commit_sha,
             "profile": receipt.plan.profile,
+            "component": receipt.plan.component,
             "runner": receipt.runner,
             "resource_limits": receipt.resource_limits.to_dict(),
             "test_network": test_network,

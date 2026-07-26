@@ -9,6 +9,7 @@ from types import TracebackType
 from typing import BinaryIO, Self, cast
 
 from .github import _isolated_git_environment
+from .model import normalize_component
 from .process import CommandError, run
 
 
@@ -150,20 +151,21 @@ def _tree_entries(
     workspace: Path,
     commit_sha: str,
     environment: dict[str, str],
+    component: str,
 ) -> tuple[_TreeEntry, ...]:
-    output = run(
-        [
-            "git",
-            "-C",
-            str(workspace),
-            "ls-tree",
-            "-r",
-            "-z",
-            "--full-tree",
-            commit_sha,
-        ],
-        env=environment,
-    ).stdout
+    command = [
+        "git",
+        "-C",
+        str(workspace),
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        commit_sha,
+    ]
+    if component != ".":
+        command.extend(("--", f":(top,literal){component}"))
+    output = run(command, env=environment).stdout
     entries: list[_TreeEntry] = []
     for record in output.split("\0"):
         if not record:
@@ -240,10 +242,13 @@ def create_workspace_archive(
     workspace: Path,
     destination: Path,
     commit_sha: str,
+    *,
+    component: str = ".",
 ) -> None:
-    """Write an atomic tar containing only files from one committed Git tree."""
+    """Write an atomic tar containing one committed repository scope."""
 
     workspace = workspace.resolve(strict=True)
+    component = normalize_component(component)
     if not workspace.is_dir() or not (workspace / ".git").is_dir():
         raise WorkspaceArchiveError("workspace is not a materialized Git checkout")
     destination = destination.resolve()
@@ -253,7 +258,12 @@ def create_workspace_archive(
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     try:
         with _isolated_git_environment(destination.parent) as environment:
-            entries = _tree_entries(workspace, commit_sha, environment)
+            entries = _tree_entries(
+                workspace,
+                commit_sha,
+                environment,
+                component,
+            )
             timestamp = run(
                 [
                     "git",

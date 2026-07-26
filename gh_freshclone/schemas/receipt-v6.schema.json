@@ -103,6 +103,7 @@
       "required": [
         "plan_version",
         "profile",
+        "component",
         "repository",
         "steps",
         "warnings"
@@ -110,6 +111,7 @@
       "properties": {
         "plan_version": { "type": "integer", "minimum": 1 },
         "profile": { "enum": ["quick", "reproduce", "full"] },
+        "component": { "type": "string", "minLength": 1 },
         "repository": { "$ref": "#/$defs/repository" },
         "steps": {
           "type": "array",

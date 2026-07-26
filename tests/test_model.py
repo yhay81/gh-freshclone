@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from gh_freshclone.model import CheckStep, ResourceLimits
+from gh_freshclone.model import CheckStep, ResourceLimits, normalize_component
 
 
 @pytest.mark.parametrize("cpus", [0, -1, math.inf, -math.inf, math.nan])
@@ -60,3 +60,34 @@ def test_check_step_canonicalizes_working_directory() -> None:
     )
 
     assert step.working_directory == "services/api"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (".", "."),
+        ("apps/web", "apps/web"),
+        ("apps/./web/", "apps/web"),
+    ],
+)
+def test_component_path_is_canonicalized(value: str, expected: str) -> None:
+    assert normalize_component(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "../outside",
+        "apps/../../outside",
+        "/absolute",
+        "windows\\path",
+        "drive:path",
+        ".git",
+        "apps/.git/hooks",
+        "apps/\nweb",
+    ],
+)
+def test_component_path_must_be_portable_and_repository_relative(value: str) -> None:
+    with pytest.raises(ValueError, match="component"):
+        normalize_component(value)
