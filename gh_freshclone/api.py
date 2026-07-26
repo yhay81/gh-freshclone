@@ -135,5 +135,5 @@ def probe_repository(
 def receipt_schema() -> dict[str, Any]:
     """Load the bundled JSON Schema for the current receipt format."""
 
-    resource = files("gh_freshclone.schemas").joinpath("receipt-v6.schema.json")
+    resource = files("gh_freshclone.schemas").joinpath("receipt-v7.schema.json")
     return json.loads(resource.read_text(encoding="utf-8"))

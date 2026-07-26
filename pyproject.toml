@@ -1,6 +1,6 @@
 [project]
 name = "gh-freshclone"
-version = "0.17.0"
+version = "0.18.0"
 description = "Compile and prove the fastest trustworthy baseline for a GitHub repository."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -49,6 +49,7 @@ packages = ["gh_freshclone"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "gh_freshclone/schemas/receipt-v6.schema.json" = "gh_freshclone/schemas/receipt-v6.schema.json"
+"gh_freshclone/schemas/receipt-v7.schema.json" = "gh_freshclone/schemas/receipt-v7.schema.json"
 
 [tool.ruff]
 line-length = 100

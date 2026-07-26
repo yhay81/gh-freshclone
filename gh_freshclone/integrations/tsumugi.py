@@ -6,7 +6,7 @@ from typing import Any
 from ..api import ProbeOutcome
 from ..model import BaselinePlan
 
-TSUMUGI_ADAPTER_VERSION = 4
+TSUMUGI_ADAPTER_VERSION = 5
 
 _BASELINE_CODE_PAIRS = (
     ("pass", "ok"),
@@ -100,6 +100,11 @@ def outcome_to_tsumugi_flags(outcome: ProbeOutcome) -> dict[str, Any]:
         ),
         "baseline_receipt_path": payload["receipt_path"],
         "baseline_receipt_cached": payload["cached"],
+        "baseline_source_cache_hit": payload.get("source_cache_hit", False),
+        "baseline_source_validation": payload.get(
+            "source_validation",
+            "not-recorded",
+        ),
         "baseline_resource_limits": payload["resource_limits"],
         "baseline_compiler_evidence": [
             {

@@ -21,6 +21,11 @@ from .model import (
 )
 
 _EVIDENCE_TOUCH_INTERVAL_SECONDS = 60 * 60
+_SOURCE_VALIDATIONS = {
+    "fresh-git-fetch",
+    "git-fsck-full-strict",
+    "local-git-clone",
+}
 
 
 def cache_root() -> Path:
@@ -121,6 +126,28 @@ def dependency_cache_path(
     )
 
 
+def source_repository_cache_path(
+    repository: Repository,
+    component: str = ".",
+) -> Path:
+    """Return an exact-commit Git object cache for one committed scope."""
+
+    name = _repository_namespace(repository)
+    component = normalize_component(component)
+    component_key = hashlib.sha256(component.encode()).hexdigest()[:24]
+    return (
+        cache_root()
+        / "runner-cache"
+        / "source"
+        / name
+        / f"c{component_key}"
+        / (
+            f"{repository.commit_sha}-p{PLAN_VERSION}-"
+            f"e{EXECUTION_POLICY_VERSION}"
+        )
+    )
+
+
 def _preparation_context(step: CheckStep) -> dict[str, str]:
     return {
         "ecosystem": step.ecosystem,
@@ -216,6 +243,17 @@ def read_pass_receipt(
     if (
         value.get("receipt_version") != RECEIPT_VERSION
         or value.get("execution_policy_version") != EXECUTION_POLICY_VERSION
+    ):
+        return None
+    source_cache_hit = value.get("source_cache_hit")
+    source_validation = value.get("source_validation")
+    if (
+        not isinstance(source_cache_hit, bool)
+        or source_validation not in _SOURCE_VALIDATIONS
+        or (
+            source_cache_hit
+            != (source_validation == "git-fsck-full-strict")
+        )
     ):
         return None
     if plan is not None and value.get("plan") != plan.to_dict():

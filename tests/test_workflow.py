@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import subprocess
 import tarfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from gh_freshclone import workflow
 from gh_freshclone.model import BaselinePlan, CheckStep, Repository
+from gh_freshclone.receipts import source_repository_cache_path
 from gh_freshclone.runners import RunnerError, RunnerExecution
 from gh_freshclone.workflow import check_repository, create_plan
 from gh_freshclone.workspace_archive import WorkspaceArchiveError
@@ -177,7 +179,54 @@ def test_fresh_preparation_triggers_volume_pressure_maintenance(
         echo=False,
     )
 
-    assert maintenance == [{"prepared_volumes_changed": True}]
+    assert maintenance == [
+        {
+            "prepared_volumes_changed": True,
+            "host_cache_changed": False,
+            "protected_path": None,
+        }
+    ]
+
+
+def test_fresh_host_dependency_cache_triggers_pressure_maintenance(
+    monkeypatch,
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(
+        "gh_freshclone.workflow.select_runner",
+        lambda requested: "docker",
+    )
+    monkeypatch.setattr(
+        "gh_freshclone.workflow.run_step",
+        lambda *args, **kwargs: RunnerExecution(
+            0,
+            0.1,
+            "ok",
+            dependency_cache="cache-key",
+            prepare_cache_hit=False,
+        ),
+    )
+    maintenance: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "gh_freshclone.cache.maybe_prune_cache",
+        lambda **kwargs: maintenance.append(kwargs),
+    )
+
+    check_repository(
+        str(git_repository),
+        use_cache=False,
+        echo=False,
+    )
+
+    assert maintenance == [
+        {
+            "prepared_volumes_changed": False,
+            "host_cache_changed": True,
+            "protected_path": None,
+        }
+    ]
 
 
 def test_cache_miss_rejects_stopped_runner_before_clone(
@@ -333,6 +382,116 @@ def test_check_never_reuses_pass_across_test_network_policies(
     assert repeated_offline_path == offline_path
     assert repeated_enabled_path == enabled_path
     assert calls == ["none", "enabled"]
+
+
+def test_fresh_checks_reuse_only_validated_exact_source_objects(
+    monkeypatch,
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(
+        "gh_freshclone.workflow.select_runner",
+        lambda requested: "docker",
+    )
+    local = workflow.resolve_repository(str(git_repository))
+    repository = replace(
+        local,
+        display_name="owner/repo",
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=False,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "resolve_repository",
+        lambda *args, **kwargs: repository,
+    )
+    real_materialize = workflow.materialize_plan_inputs
+    materialization_sources: list[str] = []
+
+    def local_first_materialization(
+        selected,
+        destination,
+        component=".",
+        *,
+        source_cache=None,
+    ):
+        if source_cache is not None and source_cache.is_dir():
+            materialization_sources.append("cache")
+            return real_materialize(
+                selected,
+                destination,
+                component,
+                source_cache=source_cache,
+            )
+        materialization_sources.append("local-fixture")
+        return real_materialize(
+            local,
+            destination,
+            component,
+        )
+
+    monkeypatch.setattr(
+        workflow,
+        "materialize_plan_inputs",
+        local_first_materialization,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "run_step",
+        lambda *args, **kwargs: RunnerExecution(
+            0,
+            0.1,
+            "ok",
+            runner_version="test",
+        ),
+    )
+
+    first, _, _ = check_repository(
+        "owner/repo",
+        use_cache=False,
+        echo=False,
+    )
+    second, _, _ = check_repository(
+        "owner/repo",
+        use_cache=False,
+        echo=False,
+    )
+    source_cache = source_repository_cache_path(repository)
+    loose_objects = [
+        path
+        for path in (source_cache / "objects").glob("[0-9a-f][0-9a-f]/*")
+        if path.is_file()
+    ]
+    assert loose_objects
+    loose_objects[0].write_bytes(b"corrupt")
+    recovered, _, _ = check_repository(
+        "owner/repo",
+        use_cache=False,
+        echo=False,
+    )
+    restored, _, _ = check_repository(
+        "owner/repo",
+        use_cache=False,
+        echo=False,
+    )
+
+    assert first.source_cache_hit is False
+    assert first.source_validation == "fresh-git-fetch"
+    assert second.source_cache_hit is True
+    assert second.source_validation == "git-fsck-full-strict"
+    assert recovered.source_cache_hit is False
+    assert recovered.source_validation == "fresh-git-fetch"
+    assert restored.source_cache_hit is True
+    assert materialization_sources == [
+        "local-fixture",
+        "cache",
+        "cache",
+        "local-fixture",
+        "cache",
+    ]
 
 
 def test_check_mounts_only_committed_files(

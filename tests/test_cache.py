@@ -203,6 +203,55 @@ def test_recent_automatic_prune_reclaims_prepared_volume_overflow(
     assert marker.stat().st_mtime != 1_900_000_000
 
 
+def test_recent_automatic_prune_reclaims_host_cache_overflow(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    marker = tmp_path / ".last-automatic-prune"
+    marker.touch()
+    monkeypatch.setattr("gh_freshclone.cache.time.time", lambda: 1_900_000_100)
+    os.utime(marker, (1_900_000_000, 1_900_000_000))
+    monkeypatch.setattr(
+        "gh_freshclone.cache._host_cache_limits_exceeded",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "gh_freshclone.cache._prepared_volume_limits_exceeded",
+        lambda: pytest.fail("unchanged volumes should not be measured"),
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "gh_freshclone.cache.prune_cache",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    maybe_prune_cache(host_cache_changed=True)
+
+    assert len(calls) == 1
+
+
+def test_recent_automatic_prune_keeps_changed_host_cache_below_limits(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    marker = tmp_path / ".last-automatic-prune"
+    marker.touch()
+    monkeypatch.setattr("gh_freshclone.cache.time.time", lambda: 1_900_000_100)
+    os.utime(marker, (1_900_000_000, 1_900_000_000))
+    monkeypatch.setattr(
+        "gh_freshclone.cache._host_cache_limits_exceeded",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "gh_freshclone.cache.prune_cache",
+        lambda **kwargs: pytest.fail("host cache remains within hard limits"),
+    )
+
+    maybe_prune_cache(host_cache_changed=True)
+
+
 def test_recent_automatic_prune_keeps_changed_volumes_below_limits(
     tmp_path: Path,
     monkeypatch,
@@ -448,6 +497,22 @@ def test_host_cache_cleanup_retries_directory_not_empty(
     assert removed is True
     assert error is None
     assert attempts == 2
+
+
+def test_host_cache_cleanup_discards_corrupt_regular_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    entry = tmp_path / "runner-cache" / "source" / "owner" / "component" / "commit"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("corrupt cache boundary\n", encoding="utf-8")
+
+    removed, error = _remove_host_entry(entry)
+
+    assert removed is True
+    assert error is None
+    assert not entry.exists()
 
 
 def test_prune_bounds_evidence_and_removes_its_pass_index(

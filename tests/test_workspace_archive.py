@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from gh_freshclone.workspace_archive import create_workspace_archive
+from gh_freshclone.workspace_archive import (
+    WorkspaceArchiveError,
+    _archive_path,
+    create_workspace_archive,
+)
 
 
 def _commit_sha(repository: Path) -> str:
@@ -36,6 +40,12 @@ def _commit(repository: Path, message: str) -> None:
         check=True,
         capture_output=True,
     )
+
+
+@pytest.mark.parametrize("path", [".git/config", ".GIT/config", "apps/.Git/index"])
+def test_archive_path_rejects_git_metadata_case_insensitively(path: str) -> None:
+    with pytest.raises(WorkspaceArchiveError, match="unsafe Git path"):
+        _archive_path(path)
 
 
 def test_workspace_archive_contains_only_exact_committed_tree(

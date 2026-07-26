@@ -23,6 +23,7 @@ from gh_freshclone.receipts import (
     read_indexed_pass_receipt,
     read_pass_receipt,
     receipt_path,
+    source_repository_cache_path,
     write_receipt,
 )
 
@@ -56,6 +57,35 @@ def test_cache_override_and_deterministic_path(
     parent = receipt_path(plan, "docker", _LIMITS).parent
     assert parent.parent == tmp_path / "receipts"
     assert parent.name.startswith("owner_repo-")
+
+
+def test_source_cache_isolated_by_repository_commit_and_component(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    plan = _plan()
+    other_commit = replace(
+        plan.repository,
+        commit_sha="b" * 40,
+    )
+    other_repository = replace(
+        plan.repository,
+        display_name="other/repo",
+        github_repository="other/repo",
+    )
+
+    root = source_repository_cache_path(plan.repository)
+    component = source_repository_cache_path(
+        plan.repository,
+        "apps/web",
+    )
+
+    assert root.is_relative_to(tmp_path / "runner-cache" / "source")
+    assert root != component
+    assert root != source_repository_cache_path(other_commit)
+    assert root != source_repository_cache_path(other_repository)
+    assert root.name.startswith(plan.repository.commit_sha)
 
 
 def test_pass_index_is_available_without_rebuilding_plan(
@@ -505,7 +535,7 @@ def test_prepared_volume_is_scoped_to_public_policy_versions() -> None:
     name = prepared_volume_name(plan.repository, plan.steps[0], plan.profile)
 
     assert name.startswith("ghfc-")
-    assert "-p10-e21" in name
+    assert "-p10-e22" in name
 
 
 def test_prepared_volume_is_scoped_to_step_working_directory() -> None:
@@ -617,3 +647,34 @@ def test_stale_pass_receipt_is_never_reused(
         )
         is None
     )
+
+
+def test_pass_receipt_requires_coherent_source_validation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path))
+    plan = _plan()
+    path = receipt_path(plan, "docker", _LIMITS)
+    receipt = Receipt(
+        created_at="2026-07-25T00:00:00+00:00",
+        status="pass",
+        runner="docker",
+        runner_version="Docker 29",
+        host_platform="test",
+        plan=plan,
+        resource_limits=_LIMITS,
+    ).to_dict()
+    path.parent.mkdir(parents=True)
+
+    for source_cache_hit, source_validation in (
+        (True, "fresh-git-fetch"),
+        (False, "git-fsck-full-strict"),
+        (False, "unknown"),
+        (None, "fresh-git-fetch"),
+    ):
+        receipt["source_cache_hit"] = source_cache_hit
+        receipt["source_validation"] = source_validation
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+
+        assert read_pass_receipt(path, plan=plan) is None

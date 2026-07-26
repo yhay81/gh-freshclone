@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/yhay81/gh-freshclone/schemas/receipt-v7.schema.json",
+  "title": "gh-freshclone receipt v7",
+  "type": "object",
+  "required": [
+    "receipt_version",
+    "execution_policy_version",
+    "created_at",
+    "status",
+    "runner",
+    "runner_version",
+    "host_platform",
+    "source_cache_hit",
+    "source_validation",
+    "resource_limits",
+    "plan",
+    "results"
+  ],
+  "properties": {
+    "receipt_version": { "const": 7 },
+    "execution_policy_version": { "type": "integer", "minimum": 1 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "status": {
+      "enum": ["pass", "test_failure", "environment_gap", "infra_failure"]
+    },
+    "runner": { "enum": ["docker", "podman", "container"] },
+    "runner_version": { "type": "string" },
+    "host_platform": { "type": "string" },
+    "source_cache_hit": { "type": "boolean" },
+    "source_validation": {
+      "enum": [
+        "fresh-git-fetch",
+        "git-fsck-full-strict",
+        "local-git-clone"
+      ]
+    },
+    "resource_limits": { "$ref": "#/$defs/resource_limits" },
+    "plan": { "$ref": "#/$defs/plan" },
+    "results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/result" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "resource_limits": {
+      "type": "object",
+      "required": ["cpus", "memory"],
+      "properties": {
+        "cpus": { "type": "number", "exclusiveMinimum": 0 },
+        "memory": {
+          "type": "string",
+          "pattern": "^[1-9]\\d*(?:\\.\\d+)?(?:[bkmg]i?b?|b)?$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "repository": {
+      "type": "object",
+      "required": [
+        "display_name",
+        "commit_sha",
+        "ref",
+        "source_url",
+        "github_repository",
+        "local_path",
+        "is_private"
+      ],
+      "properties": {
+        "display_name": { "type": "string" },
+        "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "ref": { "type": "string" },
+        "source_url": { "type": ["string", "null"] },
+        "github_repository": { "type": ["string", "null"] },
+        "local_path": { "type": ["string", "null"] },
+        "is_private": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "required": [
+        "ecosystem",
+        "image",
+        "command",
+        "evidence",
+        "dependency_fingerprint",
+        "prepare_command",
+        "test_network",
+        "working_directory"
+      ],
+      "properties": {
+        "ecosystem": { "type": "string" },
+        "image": { "type": "string" },
+        "command": { "type": "string" },
+        "prepare_command": { "type": "string" },
+        "test_network": { "enum": ["none", "enabled"] },
+        "working_directory": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "dependency_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "plan": {
+      "type": "object",
+      "required": [
+        "plan_version",
+        "profile",
+        "component",
+        "repository",
+        "steps",
+        "warnings"
+      ],
+      "properties": {
+        "plan_version": { "type": "integer", "minimum": 1 },
+        "profile": { "enum": ["quick", "reproduce", "full"] },
+        "component": { "type": "string", "minLength": 1 },
+        "repository": { "$ref": "#/$defs/repository" },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/step" }
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": [
+        "kind",
+        "message",
+        "subject",
+        "suggested_package",
+        "confidence",
+        "evidence"
+      ],
+      "properties": {
+        "kind": { "type": "string" },
+        "message": { "type": "string" },
+        "subject": { "type": ["string", "null"] },
+        "suggested_package": { "type": ["string", "null"] },
+        "confidence": { "enum": ["low", "medium", "high"] },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "ecosystem",
+        "image",
+        "image_identity",
+        "command",
+        "status",
+        "exit_code",
+        "duration_seconds",
+        "log_path",
+        "detail",
+        "diagnostics",
+        "dependency_cache",
+        "prepare_duration_seconds",
+        "test_network",
+        "failed_phase",
+        "prepared_volume",
+        "prepare_cache_hit"
+      ],
+      "properties": {
+        "ecosystem": { "type": "string" },
+        "image": { "type": "string" },
+        "image_identity": {
+          "type": "string",
+          "pattern": "^.+@sha256:[0-9a-f]{64}$"
+        },
+        "command": { "type": "string" },
+        "status": {
+          "enum": ["pass", "test_failure", "environment_gap", "infra_failure"]
+        },
+        "exit_code": { "type": ["integer", "null"] },
+        "duration_seconds": { "type": "number", "minimum": 0 },
+        "log_path": { "type": "string" },
+        "detail": { "type": "string" },
+        "diagnostics": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/diagnostic" }
+        },
+        "dependency_cache": { "type": ["string", "null"] },
+        "prepare_duration_seconds": { "type": "number", "minimum": 0 },
+        "test_network": { "enum": ["none", "enabled"] },
+        "failed_phase": { "enum": ["prepare", "test", null] },
+        "prepared_volume": { "type": ["string", "null"] },
+        "prepare_cache_hit": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}
