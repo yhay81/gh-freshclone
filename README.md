@@ -421,6 +421,10 @@ probe on a dedicated self-hosted runner labelled
 `gh-freshclone-apple-container`. GitHub-hosted macOS runners cannot provide
 this proof because [nested virtualization is not
 supported](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#limitations).
+The ordinary CI workflow additionally runs the CMake prepare/offline E2E on a
+native GitHub-hosted `ubuntu-24.04-arm` runner. This continuously verifies the
+same arm64 OCI image and CMake/Ninja wheel path used by Apple silicon, while
+the self-hosted workflow retains coverage of Apple `container` itself.
 A physical Apple silicon run and cold/warm public-repository measurements are
 recorded in
 [`docs/field-trial-2026-07-25.md`](docs/field-trial-2026-07-25.md#physical-apple-container-validation).
