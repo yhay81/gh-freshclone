@@ -27,6 +27,31 @@ The command does not execute repository code. API observations are mutable, so
 they do not alter the deterministic baseline plan, receipt, or PASS-cache
 identity.
 
+## Production consumer evidence
+
+KAGARI, the author's resident security-research coordinator, uses
+`gh-freshclone` as its public-repository G1 baseline gate. The integration pins
+release v0.18.0 by source commit
+`800d76bea5efd80f19ac019fd6d336daaeb3ad42` and accepts only plan v10,
+receipt v7, execution policy v22, and GitHub-status interface v1. It rejects
+private targets, mismatched commits, malformed results, and incoherent source
+provenance instead of treating them as a green baseline.
+
+The first physical v0.18 integration proof checked
+`dependabot/dependabot-core@6c8bb8bd9cb7ec79c324bc550a992ab66201e76a`
+at the bounded `npm_and_yarn/helpers` component. The default offline run
+preserved a high-confidence network-policy gap. One explicitly
+network-enabled retry then created a fresh isolated checkout from the exact
+source cache, passed `git fsck --full --strict`, reran all five suites and 25
+tests, and produced a PASS proof. KAGARI recorded
+`source_cache_hit=true` and `source_validation=git-fsck-full-strict`; it did
+not reuse a test result.
+
+The resident KAGARI worker runs independently of this repository's CI and
+consumes the public release through the standalone CLI. This supplies a real
+operator integration and repeatable runtime feedback without a hosted
+`gh-freshclone` service, stored GitHub credentials, or per-user server state.
+
 ## Permissions and data boundary
 
 - Only public `OWNER/REPO` targets and GitHub repository, commit, or pull

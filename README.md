@@ -54,6 +54,16 @@ Prerequisites:
 - Git
 - Docker, Podman, or Apple `container` 1.0.0+ on a supported Mac
 
+Try the signed release without installing it or executing repository code:
+
+```shell
+uvx --from "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.18.0" gh-freshclone plan pallets/itsdangerous
+```
+
+This resolves an immutable public commit and prints the baseline it would run.
+Replace `plan` with `doctor` to verify local runner readiness, or with `check`
+when you are ready to execute the baseline in an isolated container.
+
 Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
