@@ -56,7 +56,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.9.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.10.0"
 gh-freshclone doctor
 ```
 
@@ -92,6 +92,14 @@ gh-freshclone plan owner/repo --ref v1.2.3 --profile reproduce
 gh-freshclone plan https://github.com/owner/repo/pull/123
 gh-freshclone plan . --json
 ```
+
+Automatic planning reads the immutable Git tree, then hydrates only the
+committed manifests and evidence files used by detection. It does not download
+the repository's source and test bodies. `check` expands that same
+credential-free checkout to the complete exact commit only after it has found
+an executable baseline. Repository-owned `.gh-freshclone.toml` configurations
+retain a complete checkout during planning because their declared step paths
+can intentionally reference arbitrary committed files.
 
 Read the upstream GitHub CI state for the same exact commit without executing
 repository code:

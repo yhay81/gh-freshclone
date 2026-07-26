@@ -74,6 +74,19 @@ _ROOT_INPUT_FILES = {
     "tox.ini",
     *(name for names in _DEPENDENCY_FILES.values() for name in names),
 }
+AUTOMATIC_PLAN_INPUT_FILES = frozenset(_ROOT_INPUT_FILES)
+NESTED_MANIFEST_NAMES = frozenset(
+    {
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "requirements.txt",
+        "go.mod",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+    }
+)
 _HASH_CHUNK_BYTES = 1024 * 1024
 
 
@@ -1113,20 +1126,10 @@ def detect_plan(
             "Maven, and Gradle; "
             "use .gh-freshclone.toml for an explicit layout."
         )
-    root_markers = {
-        "Cargo.toml",
-        "package.json",
-        "pyproject.toml",
-        "requirements.txt",
-        "go.mod",
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-    }
     nested = sorted(
         {
             path.relative_to(root).as_posix()
-            for marker in root_markers
+            for marker in NESTED_MANIFEST_NAMES
             for path in root.glob(f"*/*/{marker}")
             if marker != "Cargo.toml" or not _cargo_workspace_owns(root, path)
         }

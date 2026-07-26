@@ -465,3 +465,43 @@ The native runner suite also creates a minimal committed Maven/JUnit project.
 It performs a cold dependency preparation and then passes one JUnit test in a
 second network-disabled container. The complete Docker E2E suite finished with
 5 passed and the Apple-only lifecycle probe skipped in 265.87 seconds.
+
+## Manifest-only planning follow-up — 2026-07-26
+
+A further 20-repository cohort showed that automatic `plan` still hydrated the
+complete worktree even though detection reads a small, fixed set of committed
+manifests. This made unsupported large repositories needlessly expensive and
+made plan availability depend on whether every unrelated Git path could be
+represented by the host filesystem.
+
+Version 0.10.0 now fetches the immutable commit with `blob:none`, enumerates its
+Git tree, and checks out only root detector inputs, declared Node entrypoints,
+and nested-manifest evidence. The existence of Python test directories is
+derived from the committed tree. A `check` with executable steps force-expands
+the same checkout to the complete exact commit before any container starts. A
+plan with no steps returns without hydrating source blobs. Configured layouts
+fall back to a complete checkout because their paths and dependency files are
+intentionally repository-defined.
+
+The following cold Windows measurements used current default-branch commits
+and no GitHub token:
+
+| Repository | Before | After | Result after change |
+|---|---:|---:|---|
+| `systemd/systemd` | 1.71 s, initialization error | 2.68 s | normal no-baseline plan |
+| `dotnet/runtime` | 106.77 s | 2.67 s | normal no-baseline plan |
+| `openssl/openssl` | 20.40 s | 1.60 s | normal no-baseline plan |
+| `videolan/vlc` | 12.49 s | 3.06 s | Rust |
+| `openpgpjs/openpgpjs` | 2.27 s | 2.59 s | Node.js |
+| `projectdiscovery/nuclei` | 4.14 s | 2.55 s | Go |
+| `apache/logging-log4j2` | not in initial timing cohort | 4.18 s | Maven |
+| `spring-projects/spring-framework` | not in initial timing cohort | 4.13 s | Gradle |
+
+`systemd/systemd` previously failed because two unrelated fuzz corpus filenames
+contain colons, which NTFS cannot materialize. Git tree inspection does not
+need those paths, so the repository now produces the intended unsupported
+baseline result on Windows. Detection parity was checked across Rust, Node.js,
+Go, Maven, and Gradle public repositories. The Docker E2E suite then exercised
+the two-stage path physically: the partial checkout expanded before execution,
+and all five runnable cases passed with the Apple-only case skipped in 128.20
+seconds.
