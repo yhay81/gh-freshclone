@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -13,6 +14,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
 from .configuration import CONFIG_NAME
+from .constants import DEFAULT_MAX_BYTES
 from .model import Repository, normalize_component
 from .process import CommandError, run
 
@@ -25,6 +27,10 @@ _GITHUB_SSH_URL = re.compile(
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _MAX_COMPONENT_PLAN_FILES = 4096
 _MAX_COMPONENT_PLAN_BYTES = 64 * 1024 * 1024
+_SOURCE_CACHE_SCHEMA_VERSION = 1
+_SOURCE_CACHE_METADATA = "source.json"
+_SOURCE_CACHE_OBJECTS = "objects"
+_SOURCE_CACHE_SHALLOW = "shallow"
 _WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -36,6 +42,10 @@ _WINDOWS_RESERVED_NAMES = {
 
 
 class RepositoryError(RuntimeError):
+    pass
+
+
+class SourceCacheError(RepositoryError):
     pass
 
 
@@ -461,6 +471,343 @@ def _initialize_materialization(
         )
 
 
+def _source_cache_metadata(
+    repository: Repository,
+    component: str,
+) -> dict[str, object]:
+    if not repository.github_repository or repository.local_path:
+        raise SourceCacheError("source cache requires a public GitHub repository")
+    return {
+        "schema_version": _SOURCE_CACHE_SCHEMA_VERSION,
+        "github_repository": repository.github_repository.casefold(),
+        "commit_sha": repository.commit_sha,
+        "component": component,
+    }
+
+
+def _source_cache_directory_exists(cache: Path) -> bool:
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    try:
+        metadata = cache.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise SourceCacheError("source cache boundary is unavailable") from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or bool(
+            getattr(metadata, "st_file_attributes", 0)
+            & reparse_attribute
+        )
+    ):
+        raise SourceCacheError("source cache boundary is invalid")
+    return True
+
+
+def _validate_source_cache_tree(root: Path) -> None:
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    try:
+        root_metadata = root.lstat()
+    except OSError as exc:
+        raise SourceCacheError(
+            "source cache object database is unavailable"
+        ) from exc
+    if (
+        not stat.S_ISDIR(root_metadata.st_mode)
+        or stat.S_ISLNK(root_metadata.st_mode)
+        or bool(
+            getattr(root_metadata, "st_file_attributes", 0)
+            & reparse_attribute
+        )
+    ):
+        raise SourceCacheError("source cache object database is unavailable")
+    pending = [root]
+    total_bytes = 0
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    metadata = entry.stat(follow_symlinks=False)
+                    is_reparse = bool(
+                        getattr(metadata, "st_file_attributes", 0)
+                        & reparse_attribute
+                    )
+                    if stat.S_ISLNK(metadata.st_mode) or is_reparse:
+                        raise SourceCacheError(
+                            "source cache contains a link or reparse point"
+                        )
+                    if stat.S_ISDIR(metadata.st_mode):
+                        pending.append(Path(entry.path))
+                    elif not stat.S_ISREG(metadata.st_mode):
+                        raise SourceCacheError(
+                            "source cache contains a non-regular object"
+                        )
+                    else:
+                        total_bytes += metadata.st_size
+                        if total_bytes > DEFAULT_MAX_BYTES:
+                            raise SourceCacheError(
+                                "source cache exceeds the bounded host cache budget"
+                            )
+        except OSError as exc:
+            raise SourceCacheError(
+                "source cache object database cannot be inspected"
+            ) from exc
+    if (root / "info" / "alternates").exists():
+        raise SourceCacheError("source cache cannot use an alternate object database")
+
+
+def _copy_source_cache_objects(source: Path, destination: Path) -> None:
+    _validate_source_cache_tree(source)
+    try:
+        shutil.copytree(
+            source,
+            destination,
+            dirs_exist_ok=True,
+            symlinks=False,
+            copy_function=shutil.copyfile,
+        )
+    except OSError as exc:
+        raise SourceCacheError("source cache objects could not be copied") from exc
+
+
+def _validate_component_object_closure(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+    component: str,
+) -> None:
+    command = [
+        "git",
+        "-C",
+        str(destination),
+        "rev-list",
+        "--objects",
+        "--missing=print",
+        repository.commit_sha,
+    ]
+    if component != ".":
+        command.extend(("--", f":(top,literal){component}"))
+    result = run(command, env=environment)
+    if any(line.startswith("?") for line in result.stdout.splitlines()):
+        raise SourceCacheError(
+            f"source cache is missing committed objects for {component}"
+        )
+
+
+def _validate_cached_materialization(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+    component: str,
+) -> None:
+    offline_environment = environment.copy()
+    offline_environment["GIT_NO_LAZY_FETCH"] = "1"
+    try:
+        run(
+            [
+                "git",
+                "-C",
+                str(destination),
+                "fsck",
+                "--full",
+                "--strict",
+                repository.commit_sha,
+            ],
+            env=offline_environment,
+        )
+        _validate_component_object_closure(
+            repository,
+            destination,
+            offline_environment,
+            component,
+        )
+    except CommandError as exc:
+        raise SourceCacheError(
+            "source cache failed Git object validation"
+        ) from exc
+
+
+def _initialize_cached_materialization(
+    repository: Repository,
+    destination: Path,
+    environment: dict[str, str],
+    cache: Path,
+    component: str,
+) -> None:
+    expected = _source_cache_metadata(repository, component)
+    if not _source_cache_directory_exists(cache):
+        raise SourceCacheError("source cache boundary is unavailable")
+    metadata_path = cache / _SOURCE_CACHE_METADATA
+    try:
+        metadata_stat = metadata_path.lstat()
+        if (
+            not stat.S_ISREG(metadata_stat.st_mode)
+            or stat.S_ISLNK(metadata_stat.st_mode)
+            or bool(
+                getattr(metadata_stat, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            )
+            or metadata_stat.st_size > 64 * 1024
+        ):
+            raise SourceCacheError("source cache metadata is invalid")
+        metadata = json.loads(
+            metadata_path.read_text(encoding="utf-8")
+        )
+    except SourceCacheError:
+        raise
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SourceCacheError("source cache metadata is invalid") from exc
+    if metadata != expected:
+        raise SourceCacheError("source cache metadata does not match the target")
+
+    objects = cache / _SOURCE_CACHE_OBJECTS
+    _validate_source_cache_tree(objects)
+    shallow = cache / _SOURCE_CACHE_SHALLOW
+    try:
+        shallow_stat = shallow.lstat()
+    except FileNotFoundError:
+        shallow_stat = None
+    except OSError as exc:
+        raise SourceCacheError(
+            "source cache shallow boundary is invalid"
+        ) from exc
+    if shallow_stat is not None and (
+        not stat.S_ISREG(shallow_stat.st_mode)
+        or stat.S_ISLNK(shallow_stat.st_mode)
+        or bool(
+            getattr(shallow_stat, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        )
+        or shallow_stat.st_size > 1024 * 1024
+    ):
+        raise SourceCacheError("source cache shallow boundary is invalid")
+    try:
+        run(
+            [
+                "git",
+                "init",
+                "--quiet",
+                "--template=",
+                "--",
+                str(destination),
+            ],
+            env=environment,
+        )
+        run(
+            [
+                "git",
+                "-C",
+                str(destination),
+                "remote",
+                "add",
+                "origin",
+                f"https://github.com/{repository.github_repository}.git",
+            ],
+            env=environment,
+        )
+        run(
+            [
+                "git",
+                "-C",
+                str(destination),
+                "config",
+                "core.repositoryformatversion",
+                "1",
+            ],
+            env=environment,
+        )
+        run(
+            [
+                "git",
+                "-C",
+                str(destination),
+                "config",
+                "remote.origin.promisor",
+                "true",
+            ],
+            env=environment,
+        )
+        run(
+            [
+                "git",
+                "-C",
+                str(destination),
+                "config",
+                "remote.origin.partialclonefilter",
+                "blob:none",
+            ],
+            env=environment,
+        )
+        _copy_source_cache_objects(objects, destination / ".git" / "objects")
+        if shallow_stat is not None:
+            shutil.copyfile(shallow, destination / ".git" / "shallow")
+        _validate_cached_materialization(
+            repository,
+            destination,
+            environment,
+            component,
+        )
+    except CommandError as exc:
+        raise SourceCacheError(
+            "source cache could not initialize a Git checkout"
+        ) from exc
+    except OSError as exc:
+        raise SourceCacheError(
+            "source cache metadata could not be restored"
+        ) from exc
+
+
+def store_source_cache(
+    repository: Repository,
+    workspace: Path,
+    cache: Path,
+    component: str = ".",
+) -> bool:
+    """Atomically retain validated Git objects for one immutable source scope."""
+
+    component = normalize_component(component)
+    expected = _source_cache_metadata(repository, component)
+    if _source_cache_directory_exists(cache):
+        return False
+    git_directory = workspace / ".git"
+    objects = git_directory / "objects"
+    if not git_directory.is_dir():
+        raise SourceCacheError("materialized Git metadata is unavailable")
+    _validate_source_cache_tree(objects)
+    with _isolated_git_environment(cache.parent) as environment:
+        _validate_cached_materialization(
+            repository,
+            workspace,
+            environment,
+            component,
+        )
+
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    temporary = cache.with_name(f".source-{uuid.uuid4().hex[:12]}.tmp")
+    try:
+        temporary.mkdir()
+        _copy_source_cache_objects(
+            objects,
+            temporary / _SOURCE_CACHE_OBJECTS,
+        )
+        shallow = git_directory / "shallow"
+        if shallow.is_file() and not shallow.is_symlink():
+            shutil.copyfile(shallow, temporary / _SOURCE_CACHE_SHALLOW)
+        (temporary / _SOURCE_CACHE_METADATA).write_text(
+            json.dumps(expected, ensure_ascii=True, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(cache)
+        return True
+    except OSError as exc:
+        raise SourceCacheError("source cache could not be stored") from exc
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary, ignore_errors=True)
+
+
 def _checkout_complete(
     repository: Repository,
     destination: Path,
@@ -538,7 +885,10 @@ def _portable_checkout_path(value: str) -> PurePosixPath | None:
     ):
         return None
     path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+    if path.is_absolute() or any(
+        part in {"", ".", ".."} or part.casefold() == ".git"
+        for part in path.parts
+    ):
         return None
     for part in path.parts:
         if len(part.encode("utf-8")) > 255:
@@ -928,7 +1278,6 @@ def _materialize_component_plan_inputs(
             str(destination),
             "ls-tree",
             "-r",
-            "-l",
             "-z",
             "--full-tree",
             repository.commit_sha,
@@ -937,14 +1286,13 @@ def _materialize_component_plan_inputs(
         ],
         env=environment,
     )
-    entries: list[tuple[PurePosixPath, PurePosixPath, int]] = []
-    total_bytes = 0
+    entries: list[tuple[PurePosixPath, PurePosixPath]] = []
     for record in result.stdout.split("\0"):
         if not record:
             continue
         try:
             metadata, value = record.split("\t", 1)
-            _, object_type, _, size = metadata.split()
+            _, object_type, _ = metadata.split()
         except ValueError as exc:
             raise RepositoryError(
                 f"cannot inspect component tree: {component}"
@@ -954,30 +1302,59 @@ def _materialize_component_plan_inputs(
         path = _portable_checkout_path(value)
         if path is None or not path.is_relative_to(portable):
             continue
-        try:
-            blob_size = int(size)
-        except ValueError as exc:
-            raise RepositoryError(
-                f"cannot inspect component blob size: {value}"
-            ) from exc
-        entries.append((path, path.relative_to(portable), blob_size))
+        entries.append((path, path.relative_to(portable)))
     component_config = portable / CONFIG_NAME
-    if any(path == component_config for path, _, _ in entries):
+    if any(path == component_config for path, _ in entries):
         if len(entries) > _MAX_COMPONENT_PLAN_FILES:
             raise RepositoryError(
                 "component plan inspection exceeds "
                 f"{_MAX_COMPONENT_PLAN_FILES} committed files"
             )
-        total_bytes = sum(size for _, _, size in entries)
+        sized = run(
+            [
+                "git",
+                "-C",
+                str(destination),
+                "ls-tree",
+                "-r",
+                "-l",
+                "-z",
+                "--full-tree",
+                repository.commit_sha,
+                "--",
+                f":(top,literal){component}",
+            ],
+            env=environment,
+        )
+        entry_paths = {path.as_posix() for path, _ in entries}
+        total_bytes = 0
+        for record in sized.stdout.split("\0"):
+            if not record:
+                continue
+            try:
+                metadata, value = record.split("\t", 1)
+                _, object_type, _, size = metadata.split()
+            except ValueError as exc:
+                raise RepositoryError(
+                    f"cannot inspect component size: {component}"
+                ) from exc
+            if object_type != "blob" or value not in entry_paths:
+                continue
+            try:
+                total_bytes += int(size)
+            except ValueError as exc:
+                raise RepositoryError(
+                    f"cannot inspect component blob size: {value}"
+                ) from exc
         if total_bytes > _MAX_COMPONENT_PLAN_BYTES:
             raise RepositoryError(
                 "component plan inspection exceeds "
                 f"{_MAX_COMPONENT_PLAN_BYTES // (1024 * 1024)} MiB"
             )
-        selected = [path.as_posix() for path, _, _ in entries]
+        selected = [path.as_posix() for path, _ in entries]
     else:
         selected = []
-        for path, relative, _ in entries:
+        for path, relative in entries:
             value = relative.as_posix()
             ruby_task = relative.suffix.casefold() == ".rake" and (
                 len(relative.parts) == 1
@@ -1012,7 +1389,7 @@ def _materialize_component_plan_inputs(
 
     component_root = destination.joinpath(*portable.parts)
     component_root.mkdir(parents=True, exist_ok=True)
-    available = {relative.as_posix() for _, relative, _ in entries}
+    available = {relative.as_posix() for _, relative in entries}
     package_path = component_root / "package.json"
     node_entrypoints: list[str] = []
     if package_path.is_file():
@@ -1083,7 +1460,7 @@ def _materialize_component_plan_inputs(
         if any(
             len(relative.parts) > 1
             and relative.parts[0] == directory
-            for _, relative, _ in entries
+            for _, relative in entries
         ):
             (component_root / directory).mkdir(exist_ok=True)
     _checkout_symlink_targets(
@@ -1111,15 +1488,32 @@ def materialize_plan_inputs(
     repository: Repository,
     destination: Path,
     component: str = ".",
-) -> None:
+    *,
+    source_cache: Path | None = None,
+) -> bool:
     """Materialize only committed files needed for deterministic plan detection."""
 
     _require("git")
     _validate_materialization(repository, destination)
     component = normalize_component(component)
+    cached_source = source_cache if (
+        source_cache is not None
+        and _source_cache_directory_exists(source_cache)
+    ) else None
+    source_cache_hit = cached_source is not None
     try:
         with _isolated_git_environment(destination.parent) as environment:
-            _initialize_materialization(repository, destination, environment)
+            if cached_source is not None:
+                _initialize_cached_materialization(
+                    repository,
+                    destination,
+                    environment,
+                    cached_source,
+                    component,
+                )
+                environment["GIT_NO_LAZY_FETCH"] = "1"
+            else:
+                _initialize_materialization(repository, destination, environment)
             if component != ".":
                 _materialize_component_plan_inputs(
                     repository,
@@ -1133,7 +1527,14 @@ def materialize_plan_inputs(
                 environment,
             ):
                 _checkout_complete(repository, destination, environment)
+        return source_cache_hit
+    except SourceCacheError:
+        raise
     except CommandError as exc:
+        if source_cache_hit:
+            raise SourceCacheError(
+                "source cache could not materialize plan inputs"
+            ) from exc
         raise RepositoryError(
             f"failed to inspect committed plan inputs for {repository.display_name}"
         ) from exc
@@ -1143,6 +1544,8 @@ def complete_materialization(
     repository: Repository,
     destination: Path,
     component: str = ".",
+    *,
+    allow_lazy_fetch: bool = True,
 ) -> None:
     """Expand the selected immutable scope after plan detection."""
 
@@ -1152,6 +1555,8 @@ def complete_materialization(
     component = normalize_component(component)
     try:
         with _isolated_git_environment(destination.parent) as environment:
+            if not allow_lazy_fetch:
+                environment["GIT_NO_LAZY_FETCH"] = "1"
             if not _commit_exists(
                 destination,
                 repository.commit_sha,

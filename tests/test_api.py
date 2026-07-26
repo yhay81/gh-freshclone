@@ -84,10 +84,10 @@ def test_plan_repository_forwards_component_scope(monkeypatch) -> None:
 def test_bundled_receipt_schema_matches_current_version() -> None:
     schema = receipt_schema()
 
-    assert schema["properties"]["receipt_version"]["const"] == 6
+    assert schema["properties"]["receipt_version"]["const"] == 7
     assert schema["properties"]["execution_policy_version"]["type"] == "integer"
     assert schema["$defs"]["plan"]["properties"]["plan_version"]["type"] == "integer"
-    assert EXECUTION_POLICY_VERSION == 21
+    assert EXECUTION_POLICY_VERSION == 22
     assert PLAN_VERSION == 10
 
 

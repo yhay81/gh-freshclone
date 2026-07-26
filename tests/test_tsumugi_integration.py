@@ -50,6 +50,8 @@ def test_environment_gap_maps_to_tsumugi_toolchain_failure() -> None:
     assert flags["baseline_base_sha"] == "a" * 40
     assert flags["baseline_detail"] == "Required executable is missing: less"
     assert flags["baseline_resource_limits"] == {"cpus": 2, "memory": "4g"}
+    assert flags["baseline_source_cache_hit"] is False
+    assert flags["baseline_source_validation"] == "not-recorded"
     assert flags["baseline_compiler_evidence"][0]["dependency_cache"] == "cache-key"
 
 

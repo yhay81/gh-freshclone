@@ -58,7 +58,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.17.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.18.0"
 gh-freshclone doctor
 ```
 
@@ -293,7 +293,7 @@ initialization failures as a JSON error envelope on standard output:
   The network-disabled test container copies only those restore outputs into a
   fresh workspace, recompiles the source, and never reuses `bin` or test
   results.
-- Canonical CPU and memory limits are recorded in receipt v6 and participate
+- Canonical CPU and memory limits are recorded in receipt v7 and participate
   in receipt and PASS-index identity; a proof produced at `2 CPU / 4g` is
   never reused for an `8g` request.
 - Download caches are isolated by repository, runner, ecosystem, dependency
@@ -316,6 +316,15 @@ initialization failures as a JSON error envelope on standard output:
   preparation failure leaves the scoped cache clean and returns normally.
   Test-phase failures retain successfully prepared dependencies for fast
   deterministic reruns.
+- A successful exact-commit materialization retains only its Git object
+  database, shallow boundary, and target metadata in the bounded host cache.
+  A later fresh proof creates a new Git repository with a generated safe
+  config, rejects links and alternate object stores, verifies retained objects
+  with `git fsck --full --strict`, and proves the selected component has no
+  missing objects while lazy fetching is disabled. Git config, hooks,
+  credentials, worktrees, test outputs, and mutable refs are never cached.
+  A source object database that cannot fit the shared 5 GiB host-cache budget
+  is not retained.
 - Deno's `DENO_DIR`, local vendor tree, and `node_modules` share the same
   exact-commit volume across the networked preparation and offline test
   containers, including repositories with `"vendor": true`.
@@ -423,14 +432,15 @@ gh-freshclone cache prune --max-gib 3 --max-volume-gib 2 \
 gh-freshclone cache prune --max-evidence-gib 0.5 --max-evidence-entries 256
 ```
 
-Automatic maintenance runs daily, and also after a preparation cache miss when
-measured prepared-volume usage has crossed its hard limit. Cache hits do not
-pay for this extra measurement. Defaults are 5 GiB and 128 dependency-cache
-entries, 1 GiB and 512 receipt/log evidence bundles, 24 prepared volumes with a
-3 GiB measured-volume budget, and 30 days. A cache hit refreshes its receipt's
-LRU time. Docker and Podman volume usage comes from runner metadata without
-mounting or executing cached content; Apple `container` retains the count and
-age limits when byte accounting is unavailable. Runner readiness, version,
+Automatic maintenance runs daily, and also after dependency, immutable-source,
+or prepared-volume growth crosses its hard limit. Cache hits do not pay for
+this extra measurement. Defaults are a shared 5 GiB and 128-entry budget for
+host dependency and exact-source caches, 1 GiB and 512 receipt/log evidence
+bundles, 24 prepared volumes with a 3 GiB measured-volume budget, and 30 days.
+A cache hit refreshes its receipt or source LRU time. Docker and Podman volume
+usage comes from runner metadata without mounting or executing cached content;
+Apple `container` retains the count and age limits when byte accounting is
+unavailable. Runner readiness, version,
 image/volume metadata, volume creation, failure diagnostics, cache metadata,
 and cleanup calls are limited to 15 seconds, so a stopped runner cannot turn
 startup, `doctor`, `cache status`, or failure handling into an unbounded wait.
@@ -453,8 +463,9 @@ indexes, and interrupted-run logs are recovered by the same maintenance path.
 It never invokes a global runner prune. Removal is limited to host paths below
 the app cache root and named volumes recorded by this app with the strict
 `ghfc-*` format. Per-resource OS locks protect every in-use dependency cache,
-receipt/log bundle, and prepared volume from automatic or manually invoked
-pruning, including from another process. Unrelated repositories remain
+exact-source object cache, receipt/log bundle, and prepared volume from
+automatic or manually invoked pruning, including from another process.
+Unrelated repositories remain
 parallel. Each step log is capped at 10 MiB while runner output continues to
 be drained; a truncation marker and diagnostic tail remain available.
 
@@ -515,6 +526,9 @@ Repository tests execute untrusted code. `gh-freshclone` therefore:
 - disables system/global Git config, checkout templates, interactive
   credential helpers, system attributes, and host-configured filters during
   materialization;
+- restores cached exact-source objects only into a newly initialized
+  credential-free repository after strict Git object and component-closure
+  validation, without retaining Git config, hooks, alternates, or refs;
 - never forwards `GH_TOKEN`, `GITHUB_TOKEN`, SSH agents, Git configuration, or
   the broad host environment;
 - gives each phase a disposable workspace extracted from one exact-commit
@@ -697,12 +711,14 @@ Tsumugi's existing `test_cmd` / `baseline_*` flag contract; it does not bypass
 Tsumugi's quality gate or external-action controls.
 
 `check --json` adds `api_version`, `receipt_path`, `cached`, and end-to-end
-`elapsed_seconds` to the receipt shape. Receipt v6 is documented by the bundled
-`gh_freshclone/schemas/receipt-v6.schema.json`. It records canonical CPU and
-memory limits, each step's working directory, and whether dependency
-preparation was reused; resource limits also scope cache reuse. The Tsumugi
-adapter preserves nested working directories and exposes limits as
-`baseline_resource_limits`.
+`elapsed_seconds` to the receipt shape. Receipt v7 is documented by the bundled
+`gh_freshclone/schemas/receipt-v7.schema.json`; v6 remains bundled for existing
+consumers. It records canonical CPU and memory limits, each step's working
+directory, whether dependency preparation was reused, and whether immutable
+source objects came from a `git fsck`-validated cache; resource limits also
+scope PASS reuse. The Tsumugi adapter preserves nested working directories and
+exposes limits and source provenance as `baseline_resource_limits`,
+`baseline_source_cache_hit`, and `baseline_source_validation`.
 
 ## Development
 

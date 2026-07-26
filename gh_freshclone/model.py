@@ -7,8 +7,8 @@ from pathlib import PurePosixPath
 from typing import Any
 
 PLAN_VERSION = 10
-RECEIPT_VERSION = 6
-EXECUTION_POLICY_VERSION = 21
+RECEIPT_VERSION = 7
+EXECUTION_POLICY_VERSION = 22
 _MEMORY_LIMIT = re.compile(
     r"[1-9]\d*(?:\.\d+)?(?:[bkmg]i?b?|b)?",
     re.IGNORECASE,
@@ -30,7 +30,7 @@ def normalize_component(value: str) -> str:
     if (
         path.is_absolute()
         or ".." in path.parts
-        or ".git" in path.parts
+        or any(part.casefold() == ".git" for part in path.parts)
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
     ):
         raise ValueError("component must stay within the repository")
@@ -59,7 +59,11 @@ class CheckStep:
         ):
             raise ValueError("working_directory must be a non-empty POSIX path")
         path = PurePosixPath(self.working_directory)
-        if path.is_absolute() or ".." in path.parts:
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or any(part.casefold() == ".git" for part in path.parts)
+        ):
             raise ValueError("working_directory must stay within the repository")
         object.__setattr__(self, "working_directory", path.as_posix())
 
@@ -187,8 +191,26 @@ class Receipt:
     plan: BaselinePlan
     resource_limits: ResourceLimits = field(default_factory=ResourceLimits)
     results: tuple[StepResult, ...] = field(default_factory=tuple)
+    source_cache_hit: bool = False
+    source_validation: str = "fresh-git-fetch"
     receipt_version: int = RECEIPT_VERSION
     execution_policy_version: int = EXECUTION_POLICY_VERSION
+
+    def __post_init__(self) -> None:
+        validations = {
+            "fresh-git-fetch",
+            "git-fsck-full-strict",
+            "local-git-clone",
+        }
+        if (
+            not isinstance(self.source_cache_hit, bool)
+            or self.source_validation not in validations
+            or (
+                self.source_cache_hit
+                != (self.source_validation == "git-fsck-full-strict")
+            )
+        ):
+            raise ValueError("source cache provenance is inconsistent")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -199,6 +221,8 @@ class Receipt:
             "runner": self.runner,
             "runner_version": self.runner_version,
             "host_platform": self.host_platform,
+            "source_cache_hit": self.source_cache_hit,
+            "source_validation": self.source_validation,
             "resource_limits": self.resource_limits.to_dict(),
             "plan": self.plan.to_dict(),
             "results": [result.to_dict() for result in self.results],

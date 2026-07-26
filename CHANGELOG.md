@@ -6,6 +6,23 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.18.0
+
+- Avoid `git ls-tree -l` during ordinary component planning. Partial clones no
+  longer hydrate every component blob merely to compute unused sizes; a
+  component-owned configuration still preserves the existing 4,096-file and
+  64 MiB fail-closed inspection limits.
+- Retain only the validated Git object database for a public exact
+  commit/component after its first complete materialization. Later fresh
+  proofs rebuild a clean Git repository, reject links and alternates, run
+  `git fsck --full --strict`, prove the selected component has no missing
+  objects with lazy fetching disabled, and then rerun the baseline. No Git
+  config, hook, credential, host checkout, test result, or mutable ref enters
+  the cache.
+- Record source-cache reuse and its validation method in receipt v7. Execution
+  policy v22 prevents older evidence or prepared state from crossing the new
+  source-provenance boundary.
+
 ## 0.17.0
 
 - Add an explicit `--component PATH` scope to `plan` and `check`. The compiler

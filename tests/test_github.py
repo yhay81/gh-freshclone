@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from gh_freshclone.github import (
     parse_github_repository,
     parse_github_target,
     resolve_repository,
+    store_source_cache,
 )
 from gh_freshclone.model import Repository
 from gh_freshclone.process import CommandError, Completed
@@ -106,6 +109,7 @@ def test_plan_materialization_expands_only_after_detection(
 
 
 def test_plan_materialization_is_bounded_to_selected_component(
+    monkeypatch,
     git_repository: Path,
     tmp_path: Path,
 ) -> None:
@@ -151,6 +155,14 @@ def test_plan_materialization_is_bounded_to_selected_component(
     )
     repository = resolve_repository(str(git_repository))
     checkout = tmp_path / "component-checkout"
+    commands: list[list[str]] = []
+    original_run = github.run
+
+    def tracking_run(command, *args, **kwargs):
+        commands.append(command)
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(github, "run", tracking_run)
 
     materialize_plan_inputs(repository, checkout, "apps/web")
 
@@ -161,6 +173,10 @@ def test_plan_materialization_is_bounded_to_selected_component(
     assert not (checkout / "apps" / "web" / "test" / "source.test.js").exists()
     assert not (checkout / "apps" / "api").exists()
     assert not (checkout / "pyproject.toml").exists()
+    assert not any(
+        "ls-tree" in command and "-l" in command
+        for command in commands
+    )
 
     complete_materialization(repository, checkout, "apps/web")
 
@@ -174,6 +190,277 @@ def test_plan_materialization_is_bounded_to_selected_component(
         text=True,
     ).stdout.strip()
     assert actual == repository.commit_sha
+
+
+def test_source_cache_restores_verified_objects_without_git_config(
+    monkeypatch,
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    local = resolve_repository(str(git_repository))
+    repository = replace(
+        local,
+        display_name="owner/repo",
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=False,
+    )
+    cache = tmp_path / "source-cache"
+
+    assert store_source_cache(repository, git_repository, cache)
+    assert (cache / "source.json").is_file()
+    assert (cache / "objects").is_dir()
+    assert not (cache / "config").exists()
+    assert not (cache / "hooks").exists()
+
+    commands: list[tuple[list[str], dict[str, str] | None]] = []
+    original_run = github.run
+
+    def tracking_run(command, *args, **kwargs):
+        commands.append((command, kwargs.get("env")))
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(github, "run", tracking_run)
+    checkout = tmp_path / "restored"
+    hit = materialize_plan_inputs(
+        repository,
+        checkout,
+        source_cache=cache,
+    )
+    complete_materialization(
+        repository,
+        checkout,
+        allow_lazy_fetch=False,
+    )
+
+    assert hit is True
+    assert (checkout / "tests" / "test_sample.py").is_file()
+    assert not any("fetch" in command for command, _ in commands)
+    assert any("fsck" in command for command, _ in commands)
+    assert any("--missing=print" in command for command, _ in commands)
+    offline_validations = [
+        environment
+        for command, environment in commands
+        if "fsck" in command or "--missing=print" in command
+    ]
+    assert offline_validations
+    assert all(
+        environment is not None
+        and environment.get("GIT_NO_LAZY_FETCH") == "1"
+        for environment in offline_validations
+    )
+    config = (checkout / ".git" / "config").read_text(encoding="utf-8")
+    assert "https://github.com/owner/repo.git" in config
+    assert "hooksPath" not in config
+
+
+def test_source_cache_never_exceeds_the_host_cache_budget(
+    monkeypatch,
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    local = resolve_repository(str(git_repository))
+    repository = replace(
+        local,
+        display_name="owner/repo",
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=False,
+    )
+    monkeypatch.setattr(github, "DEFAULT_MAX_BYTES", 1)
+    cache = tmp_path / "source-cache"
+
+    with pytest.raises(
+        github.SourceCacheError,
+        match="bounded host cache budget",
+    ):
+        store_source_cache(repository, git_repository, cache)
+
+    assert not cache.exists()
+
+
+def test_source_cache_rejects_alternate_object_database(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    local = resolve_repository(str(git_repository))
+    repository = replace(
+        local,
+        display_name="owner/repo",
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=False,
+    )
+    cache = tmp_path / "source-cache"
+    store_source_cache(repository, git_repository, cache)
+    alternates = cache / "objects" / "info" / "alternates"
+    alternates.parent.mkdir(parents=True, exist_ok=True)
+    alternates.write_text(str(git_repository / ".git" / "objects"), encoding="utf-8")
+
+    with pytest.raises(
+        github.SourceCacheError,
+        match="alternate object database",
+    ):
+        materialize_plan_inputs(
+            repository,
+            tmp_path / "restored",
+            source_cache=cache,
+        )
+
+
+def test_source_cache_rejects_corrupt_git_object(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    local = resolve_repository(str(git_repository))
+    repository = replace(
+        local,
+        display_name="owner/repo",
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=False,
+    )
+    cache = tmp_path / "source-cache"
+    store_source_cache(repository, git_repository, cache)
+    loose_objects = [
+        path
+        for path in (cache / "objects").glob("[0-9a-f][0-9a-f]/*")
+        if path.is_file()
+    ]
+    assert loose_objects
+    loose_objects[0].chmod(loose_objects[0].stat().st_mode | stat.S_IWRITE)
+    loose_objects[0].write_bytes(b"corrupt")
+
+    with pytest.raises(
+        github.SourceCacheError,
+        match="Git object validation",
+    ):
+        materialize_plan_inputs(
+            repository,
+            tmp_path / "restored",
+            source_cache=cache,
+        )
+
+
+def test_source_cache_rejects_non_regular_metadata(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    local = resolve_repository(str(git_repository))
+    repository = replace(
+        local,
+        display_name="owner/repo",
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=False,
+    )
+    cache = tmp_path / "source-cache"
+    store_source_cache(repository, git_repository, cache)
+    metadata = cache / "source.json"
+    metadata.unlink()
+    metadata.mkdir()
+
+    with pytest.raises(
+        github.SourceCacheError,
+        match="metadata is invalid",
+    ):
+        materialize_plan_inputs(
+            repository,
+            tmp_path / "restored",
+            source_cache=cache,
+        )
+
+
+def test_source_cache_rejects_non_regular_shallow_boundary(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    local = resolve_repository(str(git_repository))
+    repository = replace(
+        local,
+        display_name="owner/repo",
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=False,
+    )
+    cache = tmp_path / "source-cache"
+    store_source_cache(repository, git_repository, cache)
+    (cache / "shallow").mkdir()
+
+    with pytest.raises(
+        github.SourceCacheError,
+        match="shallow boundary is invalid",
+    ):
+        materialize_plan_inputs(
+            repository,
+            tmp_path / "restored",
+            source_cache=cache,
+        )
+
+
+def test_source_cache_rejects_non_directory_boundary(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    local = resolve_repository(str(git_repository))
+    repository = replace(
+        local,
+        display_name="owner/repo",
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=False,
+    )
+    cache = tmp_path / "source-cache"
+    cache.write_text("not a cache\n", encoding="utf-8")
+
+    with pytest.raises(
+        github.SourceCacheError,
+        match="boundary is invalid",
+    ):
+        materialize_plan_inputs(
+            repository,
+            tmp_path / "restored",
+            source_cache=cache,
+        )
+
+
+def test_source_cache_rejects_linked_boundary(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    local = resolve_repository(str(git_repository))
+    repository = replace(
+        local,
+        display_name="owner/repo",
+        source_url="https://github.com/owner/repo",
+        github_repository="owner/repo",
+        local_path=None,
+        is_private=False,
+    )
+    real_cache = tmp_path / "real-cache"
+    linked_cache = tmp_path / "linked-cache"
+    store_source_cache(repository, git_repository, real_cache)
+    try:
+        linked_cache.symlink_to(real_cache, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are not available")
+
+    with pytest.raises(
+        github.SourceCacheError,
+        match="boundary is invalid",
+    ):
+        materialize_plan_inputs(
+            repository,
+            tmp_path / "restored",
+            source_cache=linked_cache,
+        )
 
 
 def test_component_configuration_materializes_its_bounded_custom_layout(

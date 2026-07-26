@@ -44,7 +44,15 @@ def test_resource_limits_canonicalize_integral_cpu_to_float() -> None:
 
 @pytest.mark.parametrize(
     "path",
-    ["../outside", "/absolute", "windows\\path", "drive:path", ""],
+    [
+        "../outside",
+        "/absolute",
+        "windows\\path",
+        "drive:path",
+        ".git",
+        "apps/.GIT",
+        "",
+    ],
 )
 def test_check_step_rejects_non_portable_working_directory(path: str) -> None:
     with pytest.raises(ValueError, match="working_directory"):
@@ -84,7 +92,9 @@ def test_component_path_is_canonicalized(value: str, expected: str) -> None:
         "windows\\path",
         "drive:path",
         ".git",
+        ".GIT",
         "apps/.git/hooks",
+        "apps/.GIT/hooks",
         "apps/\nweb",
     ],
 )

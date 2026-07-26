@@ -142,7 +142,10 @@ def _archive_path(value: str) -> PurePosixPath:
     ):
         raise WorkspaceArchiveError("checkout contains a non-portable Git path")
     path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+    if path.is_absolute() or any(
+        part in {"", ".", ".."} or part.casefold() == ".git"
+        for part in path.parts
+    ):
         raise WorkspaceArchiveError("checkout contains an unsafe Git path")
     return path
 

@@ -289,6 +289,14 @@ def _print_receipt(
     print(f"Result:     {payload['status'].upper()}{' (cached)' if cached else ''}")
     print(f"Runner:     {payload['runner']}")
     print(f"Profile:    {plan.get('profile', 'quick')}")
+    source_validation = payload.get("source_validation")
+    if source_validation:
+        source_suffix = (
+            " (cache hit)"
+            if payload.get("source_cache_hit")
+            else ""
+        )
+        print(f"Source:     {source_validation}{source_suffix}")
     limits = payload.get("resource_limits", {})
     if limits:
         cpus = limits.get("cpus", "?")

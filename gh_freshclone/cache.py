@@ -593,6 +593,9 @@ def _remove_host_entry(path: Path) -> tuple[bool, str | None]:
             resolved_root = root.resolve()
             if not path.resolve().is_relative_to(resolved_root):
                 return False, "resolved path is outside the app runner-cache root"
+            if path.is_file():
+                path.unlink()
+                return True, None
             removal_path = path
             if os.name == "nt":
                 removal_path = _windows_extended_path(path)
@@ -969,15 +972,24 @@ def _prepared_volume_limits_exceeded() -> bool:
     )
 
 
+def _host_cache_limits_exceeded() -> bool:
+    entries = _host_entries()
+    return (
+        len(entries) > DEFAULT_MAX_ENTRIES
+        or sum(entry.size for entry in entries) > DEFAULT_MAX_BYTES
+    )
+
+
 def maybe_prune_cache(
     *,
     prepared_volumes_changed: bool = False,
+    host_cache_changed: bool = False,
     protected_path: Path | None = None,
     protected_evidence: Path | None = None,
     protected_volume: tuple[str, str] | None = None,
     protected_volumes: tuple[tuple[str, str], ...] = (),
 ) -> None:
-    """Run daily maintenance, or reclaim an observed prepared-volume overflow."""
+    """Run daily maintenance, or reclaim a newly observed cache overflow."""
 
     marker = cache_root() / ".last-automatic-prune"
     try:
@@ -987,9 +999,18 @@ def maybe_prune_cache(
                 and time.time() - marker.stat().st_mtime
                 < AUTOMATIC_PRUNE_INTERVAL_SECONDS
             )
-            if recently_pruned and (
-                not prepared_volumes_changed
-                or not _prepared_volume_limits_exceeded()
+            volume_reclaim_required = (
+                prepared_volumes_changed
+                and _prepared_volume_limits_exceeded()
+            )
+            host_reclaim_required = (
+                host_cache_changed
+                and _host_cache_limits_exceeded()
+            )
+            if (
+                recently_pruned
+                and not volume_reclaim_required
+                and not host_reclaim_required
             ):
                 return
             prune_cache(

@@ -772,3 +772,35 @@ seconds. The resolved multi-architecture image identity was
 The receipt recorded plan v10, execution policy v21, component
 `npm_and_yarn/helpers`, and the operator network override independently from
 the default offline cache identity.
+
+## Exact source reuse follow-up — 2026-07-26
+
+The component trial also exposed a transport inefficiency. Ordinary component
+planning used `git ls-tree -l`; under a blobless partial clone, asking for
+every blob size hydrated all 84 selected-component files even though automatic
+detection needed only bounded manifests. Removing that unused size query
+reduced a physical exact-commit plan from 42.035 seconds to 1.949 seconds
+(95.4%). Component-owned configuration remains unchanged: because it may name
+arbitrary files, it still enforces the 4,096-file and 64 MiB limits before
+materialization.
+
+Fresh execution must eventually acquire every selected source blob. Previously
+the successful Git objects were deleted with the temporary checkout, so the
+high-confidence offline network-policy failure and its one permitted
+network-enabled retry each paid the same roughly 44-second immutable transport
+cost. Version 0.18 retains only that exact commit/component's Git object
+database and shallow boundary in the bounded app cache. It does not retain the
+Git config, hooks, refs, credentials, host worktree, archive, dependencies, or
+test result.
+
+The first execution-policy-v22 offline proof was deliberately cold. It took
+87.089 seconds, including 23.077 seconds of dependency preparation, and
+preserved the expected high-confidence `network_policy` environment gap. Its
+source cache occupied 859,004 bytes across 331 regular files. The immediately
+following network-enabled proof created a new isolated Git repository, copied
+those objects, ran `git fsck --full --strict`, verified the component closure
+with lazy fetching disabled, reused verified dependency preparation in 0.762
+seconds, and reran all five suites and 25 tests successfully. End-to-end time
+fell to 16.773 seconds, with 11.660 seconds in the runner. Receipt v7 records
+`source_cache_hit=true` and `source_validation=git-fsck-full-strict`; this is
+source transport reuse, not test-result reuse.

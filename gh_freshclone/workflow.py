@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import shutil
 import tempfile
 from contextlib import ExitStack
 from dataclasses import replace
@@ -23,6 +24,7 @@ from .receipts import (
     read_indexed_pass_receipt,
     read_pass_receipt,
     receipt_path,
+    source_repository_cache_path,
     write_receipt,
 )
 from .runner_policy import (
@@ -65,20 +67,45 @@ def materialize_plan_inputs(
     repository: Repository,
     destination: Path,
     component: str = ".",
-) -> None:
+    *,
+    source_cache: Path | None = None,
+) -> bool:
     from .github import materialize_plan_inputs as implementation
 
-    implementation(repository, destination, component)
+    return implementation(
+        repository,
+        destination,
+        component,
+        source_cache=source_cache,
+    )
 
 
 def complete_materialization(
     repository: Repository,
     destination: Path,
     component: str = ".",
+    *,
+    allow_lazy_fetch: bool = True,
 ) -> None:
     from .github import complete_materialization as implementation
 
-    implementation(repository, destination, component)
+    implementation(
+        repository,
+        destination,
+        component,
+        allow_lazy_fetch=allow_lazy_fetch,
+    )
+
+
+def store_source_cache(
+    repository: Repository,
+    workspace: Path,
+    cache: Path,
+    component: str = ".",
+) -> bool:
+    from .github import store_source_cache as implementation
+
+    return implementation(repository, workspace, cache, component)
 
 
 def run_step(*args: Any, **kwargs: Any) -> RunnerExecution:
@@ -255,11 +282,14 @@ def _check_resolved_repository(
     from .cache import (
         CacheSpaceError,
         cache_path_lock,
+        discard_dependency_cache,
         ensure_storage_reserve,
         maybe_prune_cache,
+        touch_dependency_cache,
     )
     from .detect import detect_plan
     from .diagnostics import diagnose_failure
+    from .github import SourceCacheError
     from .workspace_archive import WorkspaceArchiveError, create_workspace_archive
 
     try:
@@ -270,10 +300,38 @@ def _check_resolved_repository(
     with tempfile.TemporaryDirectory(
         prefix="gh-freshclone-check-",
         ignore_cleanup_errors=True,
-    ) as temporary, ExitStack() as evidence_locks:
+    ) as temporary, ExitStack() as evidence_locks, ExitStack() as source_locks:
         temporary_root = Path(temporary)
         checkout = temporary_root / "source"
-        materialize_plan_inputs(repository, checkout, component)
+        source_cache = (
+            source_repository_cache_path(repository, component)
+            if repository.github_repository and not repository.local_path
+            else None
+        )
+        source_cache_hit = False
+        host_cache_changed = False
+        if source_cache is not None:
+            source_locks.enter_context(cache_path_lock(source_cache))
+            try:
+                source_cache_hit = materialize_plan_inputs(
+                    repository,
+                    checkout,
+                    component,
+                    source_cache=source_cache,
+                )
+                if source_cache_hit:
+                    touch_dependency_cache(source_cache)
+            except SourceCacheError as exc:
+                removed, removal_error = discard_dependency_cache(source_cache)
+                if source_cache.exists() or (not removed and removal_error):
+                    detail = removal_error or str(exc)
+                    raise WorkflowError(
+                        f"invalid source cache could not be discarded: {detail}"
+                    ) from exc
+                shutil.rmtree(checkout, ignore_errors=True)
+                materialize_plan_inputs(repository, checkout, component)
+        else:
+            materialize_plan_inputs(repository, checkout, component)
         plan = _apply_test_network_policy(
             detect_plan(
                 repository,
@@ -298,7 +356,12 @@ def _check_resolved_repository(
             return cached, destination, True
 
         evidence_locks.enter_context(cache_path_lock(destination))
-        complete_materialization(repository, checkout, component)
+        complete_materialization(
+            repository,
+            checkout,
+            component,
+            allow_lazy_fetch=not source_cache_hit,
+        )
         workspace_archive = temporary_root / "workspace.tar"
         try:
             create_workspace_archive(
@@ -307,6 +370,23 @@ def _check_resolved_repository(
                 repository.commit_sha,
                 component=component,
             )
+            if source_cache is not None and not source_cache_hit:
+                try:
+                    source_cache_changed = store_source_cache(
+                        repository,
+                        checkout,
+                        source_cache,
+                        component,
+                    )
+                    if source_cache_changed:
+                        touch_dependency_cache(source_cache)
+                        host_cache_changed = True
+                except SourceCacheError as exc:
+                    if echo:
+                        print(
+                            "gh-freshclone: immutable source cache unavailable; "
+                            f"continuing without reuse ({exc})"
+                        )
         except WorkspaceArchiveError as exc:
             workspace_archive = None
             if echo:
@@ -314,6 +394,7 @@ def _check_resolved_repository(
                     "gh-freshclone: workspace archive unavailable; "
                     f"using bind copy ({exc})"
                 )
+        source_locks.close()
         results: list[StepResult] = []
         last_execution: RunnerExecution | None = None
         prepared_volumes_changed = False
@@ -351,6 +432,11 @@ def _check_resolved_repository(
             last_execution = execution
             prepared_volumes_changed = prepared_volumes_changed or bool(
                 execution.prepared_volume
+                and execution.prepare_cache_hit is False
+            )
+            host_cache_changed = host_cache_changed or bool(
+                execution.dependency_cache
+                and not execution.prepared_volume
                 and execution.prepare_cache_hit is False
             )
             status, diagnostics = diagnose_failure(
@@ -405,10 +491,22 @@ def _check_resolved_repository(
             plan=plan,
             resource_limits=resource_limits,
             results=tuple(results),
+            source_cache_hit=source_cache_hit,
+            source_validation=(
+                "git-fsck-full-strict"
+                if source_cache_hit
+                else (
+                    "local-git-clone"
+                    if repository.local_path
+                    else "fresh-git-fetch"
+                )
+            ),
         )
         write_receipt(destination, receipt)
         evidence_locks.close()
         maybe_prune_cache(
             prepared_volumes_changed=prepared_volumes_changed,
+            host_cache_changed=host_cache_changed,
+            protected_path=source_cache,
         )
         return receipt, destination, False
