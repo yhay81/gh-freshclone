@@ -43,6 +43,31 @@ _SHARED_LIBRARY = re.compile(
     r"error while loading shared libraries: (?P<name>[^: ]+)",
     re.IGNORECASE,
 )
+_DIAGNOSTIC_OUTPUT_MARKERS = (
+    "command not found",
+    "executable file not found",
+    "no such file or directory",
+    "permissionerror",
+    "fatalerror",
+    "executable `",
+    "network is unreachable",
+    "temporary failure in name resolution",
+    "could not resolve host",
+    "unknownhostexception",
+    "name or service not known",
+    "failed to lookup address information",
+    "dns error:",
+    "enetunreach",
+    "eai_again",
+    "getaddrinfo",
+    "no cached version",
+    "has not been downloaded",
+    "could not parse the content at http",
+    "terms of use have not been agreed to",
+    "license agreement has not been accepted",
+    "cannot find a java installation on your machine",
+    "toolchain download repositories have not been configured",
+)
 
 
 def failure_executable_candidates(line: str) -> tuple[str, ...]:
@@ -55,6 +80,13 @@ def failure_executable_candidates(line: str) -> tuple[str, ...]:
         for name in _PACKAGE_HINTS
         if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", line)
     )
+
+
+def is_diagnostic_output(line: str) -> bool:
+    """Return whether a log line should survive beyond the ordinary output tail."""
+
+    lowered = line.lower()
+    return any(marker in lowered for marker in _DIAGNOSTIC_OUTPUT_MARKERS)
 
 
 def diagnose_failure(
@@ -124,6 +156,7 @@ def diagnose_failure(
             "network is unreachable",
             "temporary failure in name resolution",
             "could not resolve host",
+            "unknownhostexception",
             "connection timed out",
             "connection reset by peer",
         )
@@ -143,18 +176,86 @@ def diagnose_failure(
             ),
         )
 
-    if test_network == "none" and any(
+    if any(
         marker in lowered
         for marker in (
-            "network is unreachable",
-            "temporary failure in name resolution",
-            "could not resolve host",
-            "name or service not known",
-            "failed to lookup address information",
-            "dns error:",
-            "enetunreach",
-            "eai_again",
-            "getaddrinfo",
+            "cannot find a java installation on your machine",
+            "toolchain download repositories have not been configured",
+        )
+    ):
+        return (
+            "environment_gap",
+            (
+                Diagnostic(
+                    kind="missing_java_toolchain",
+                    message=(
+                        "The Gradle build requires a Java toolchain that is not "
+                        "available in the selected container image."
+                    ),
+                    confidence="high",
+                    evidence=("runner output explicitly reports a missing Java toolchain",),
+                ),
+            ),
+        )
+
+    if any(
+        marker in lowered
+        for marker in (
+            "terms of use have not been agreed to",
+            "license agreement has not been accepted",
+        )
+    ):
+        return (
+            "environment_gap",
+            (
+                Diagnostic(
+                    kind="external_agreement_required",
+                    message=(
+                        "The repository baseline requires an external agreement "
+                        "that gh-freshclone will not accept automatically."
+                    ),
+                    confidence="high",
+                    evidence=("runner output explicitly requires legal acceptance",),
+                ),
+            ),
+        )
+
+    offline_resolution_gap = (
+        "offline mode" in lowered
+        and any(
+            marker in lowered
+            for marker in (
+                "no cached version",
+                "has not been downloaded",
+                "cannot access",
+            )
+        )
+    ) or (
+        re.search(r"could not parse the content at https?://", lowered) is not None
+        and any(
+            marker in lowered
+            for marker in (
+                "build is running offline",
+                "running with --offline",
+            )
+        )
+    )
+    if test_network == "none" and (
+        offline_resolution_gap
+        or any(
+            marker in lowered
+            for marker in (
+                "network is unreachable",
+                "temporary failure in name resolution",
+                "could not resolve host",
+                "unknownhostexception",
+                "name or service not known",
+                "failed to lookup address information",
+                "dns error:",
+                "enetunreach",
+                "eai_again",
+                "getaddrinfo",
+            )
         )
     ):
         return (
@@ -167,7 +268,9 @@ def diagnose_failure(
                         "network policy was 'none'."
                     ),
                     confidence="high",
-                    evidence=("runner output reports a network access failure",),
+                    evidence=(
+                        "runner output reports a network or offline-resolution failure",
+                    ),
                 ),
             ),
         )

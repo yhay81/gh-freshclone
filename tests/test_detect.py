@@ -501,6 +501,277 @@ def test_go_toolchain_directive_selects_the_preferred_release(tmp_path: Path) ->
     assert "toolchain" in step.evidence
 
 
+def test_detects_maven_wrapper_with_offline_test_lifecycle(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pom.xml").write_text("<project />\n", encoding="utf-8")
+    (tmp_path / "mvnw").write_text("#!/bin/sh\n", encoding="utf-8")
+    wrapper = tmp_path / ".mvn" / "wrapper"
+    wrapper.mkdir(parents=True)
+    (wrapper / "maven-wrapper.properties").write_text(
+        "distributionUrl=https://repo.maven.apache.org/maven2/\n",
+        encoding="utf-8",
+    )
+
+    quick = detect_plan(_repository(), tmp_path)
+    full = detect_plan(_repository(), tmp_path, "full")
+
+    step = quick.steps[0]
+    assert step.ecosystem == "maven"
+    assert step.image == "docker.io/library/maven:3.9-eclipse-temurin-21"
+    assert step.prepare_command == (
+        "sh ./mvnw -B -ntp -Dmaven.repo.local=/cache/m2 "
+        "-DskipTests dependency:go-offline && "
+        "for provider_pom in "
+        "/cache/m2/org/apache/maven/plugins/maven-surefire-plugin/*/"
+        "maven-surefire-plugin-*.pom; do "
+        '[ -f "$provider_pom" ] || continue; '
+        'provider_version=$(basename "$(dirname "$provider_pom")"); '
+        "for provider in surefire-junit3 surefire-junit4 "
+        "surefire-junit47 surefire-junit-platform surefire-testng; do "
+        "mvn -B -ntp -Dmaven.repo.local=/cache/m2 "
+        'dependency:get -Dartifact="org.apache.maven.surefire:'
+        '${provider}:${provider_version}" || true; '
+        "done; done; "
+        "for platform_pom in "
+        "/cache/m2/org/junit/platform/junit-platform-engine/*/"
+        "junit-platform-engine-*.pom; do "
+        '[ -f "$platform_pom" ] || continue; '
+        'platform_version=$(basename "$(dirname "$platform_pom")"); '
+        "mvn -B -ntp -Dmaven.repo.local=/cache/m2 "
+        'dependency:get -Dartifact="org.junit.platform:'
+        'junit-platform-launcher:${platform_version}" || true; '
+        "done"
+    )
+    assert step.command == (
+        "sh ./mvnw -B -ntp -Dmaven.repo.local=/cache/m2 -o test"
+    )
+    assert "mvnw" in step.evidence
+    assert ".mvn/wrapper/maven-wrapper.properties" in step.evidence
+    assert "profile.quick" in step.evidence
+    assert full.steps[0].command.endswith("-o verify")
+
+
+def test_maven_without_wrapper_uses_the_pinned_image_tool(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pom.xml").write_text("<project />\n", encoding="utf-8")
+
+    step = detect_plan(_repository(), tmp_path).steps[0]
+
+    assert step.prepare_command.startswith("mvn -B -ntp ")
+    assert step.command == "mvn -B -ntp -Dmaven.repo.local=/cache/m2 -o test"
+    assert "mvnw" not in step.evidence
+
+
+def test_detects_only_committed_gradle_wrapper(tmp_path: Path) -> None:
+    (tmp_path / "settings.gradle.kts").write_text(
+        'rootProject.name = "sample"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "build.gradle.kts").write_text(
+        "plugins { java }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n", encoding="utf-8")
+    wrapper = tmp_path / "gradle" / "wrapper"
+    wrapper.mkdir(parents=True)
+    (wrapper / "gradle-wrapper.properties").write_text(
+        "distributionUrl=https\\://services.gradle.org/distributions/"
+        "gradle-9.1.0-bin.zip\n",
+        encoding="utf-8",
+    )
+
+    quick = detect_plan(_repository(), tmp_path)
+    full = detect_plan(_repository(), tmp_path, "full")
+
+    step = quick.steps[0]
+    assert step.ecosystem == "gradle"
+    assert step.image == "docker.io/library/gradle:jdk21-noble"
+    assert step.prepare_command.startswith(
+        "printf '%s\\n' 'gradle.beforeProject {"
+    )
+    assert "ghFreshcloneResolveProjectDependencies" in step.prepare_command
+    assert "configuration.canBeResolved" in step.prepare_command
+    assert 'name.contains(\"test\")' in step.prepare_command
+    assert 'name.endsWith(\"runtimeclasspath\")' in step.prepare_command
+    assert step.prepare_command.endswith(
+        "sh ./gradlew --no-daemon --console=plain --max-workers=2 "
+        "--no-configuration-cache "
+        "--init-script /tmp/gh-freshclone-resolve.gradle "
+        "testClasses ghFreshcloneResolveDependencies"
+    )
+    assert step.command == (
+        "sh ./gradlew --no-daemon --console=plain --max-workers=2 "
+        "--offline test"
+    )
+    assert "settings.gradle.kts" in step.evidence
+    assert "build.gradle.kts" in step.evidence
+    assert "gradle/wrapper/gradle-wrapper.properties" in step.evidence
+    assert "gradle.wrapper.version.9.1" in step.evidence
+    assert "runtime.java.21" in step.evidence
+    assert full.steps[0].command.endswith("--offline check")
+
+
+@pytest.mark.parametrize(
+    ("wrapper_version", "java_major"),
+    [
+        ("7.6.6", 17),
+        ("8.4.3", 17),
+        ("8.5.0", 21),
+        ("9.0.0", 21),
+        ("9.1.0", 21),
+        ("9.7.0-rc-1", 21),
+    ],
+)
+def test_gradle_wrapper_selects_a_compatible_jdk(
+    tmp_path: Path,
+    wrapper_version: str,
+    java_major: int,
+) -> None:
+    (tmp_path / "build.gradle").write_text("plugins { id 'java' }\n")
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n")
+    wrapper = tmp_path / "gradle" / "wrapper"
+    wrapper.mkdir(parents=True)
+    (wrapper / "gradle-wrapper.properties").write_text(
+        "distributionUrl=https\\://services.gradle.org/distributions/"
+        f"gradle-{wrapper_version}-bin.zip\n",
+        encoding="utf-8",
+    )
+
+    step = detect_plan(_repository(), tmp_path).steps[0]
+
+    assert step.image == (
+        f"docker.io/library/gradle:jdk{java_major}-noble"
+    )
+    assert f"runtime.java.{java_major}" in step.evidence
+
+
+@pytest.mark.parametrize(
+    ("suffix", "syntax", "java_major"),
+    [
+        ("", "languageVersion = JavaLanguageVersion.of(17)", 17),
+        (".kts", "languageVersion.set(JavaLanguageVersion.of(25))", 25),
+    ],
+)
+def test_gradle_declared_toolchain_overrides_wrapper_runtime_default(
+    tmp_path: Path,
+    suffix: str,
+    syntax: str,
+    java_major: int,
+) -> None:
+    (tmp_path / f"build.gradle{suffix}").write_text(
+        f"plugins {{ java }}\njava {{ toolchain {{ {syntax} }} }}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n", encoding="utf-8")
+    wrapper = tmp_path / "gradle" / "wrapper"
+    wrapper.mkdir(parents=True)
+    (wrapper / "gradle-wrapper.properties").write_text(
+        "distributionUrl=https\\://services.gradle.org/distributions/"
+        "gradle-9.5.1-bin.zip\n",
+        encoding="utf-8",
+    )
+
+    step = detect_plan(_repository(), tmp_path).steps[0]
+
+    assert step.image == f"docker.io/library/gradle:jdk{java_major}-noble"
+    assert f"toolchain.java.{java_major}" in step.evidence
+    assert f"runtime.java.{java_major}" in step.evidence
+
+
+def test_gradle_unsupported_declared_toolchain_requires_configuration(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "build.gradle").write_text(
+        "plugins { id 'java' }\n"
+        "java { toolchain { languageVersion = JavaLanguageVersion.of(11) } }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    assert plan.steps[0].image == "docker.io/library/gradle:jdk21-noble"
+    assert any(
+        "declares Java toolchain 11" in warning
+        and "explicit image" in warning
+        for warning in plan.warnings
+    )
+
+
+def test_gradle_without_wrapper_is_explicitly_not_auto_run(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "build.gradle").write_text("plugins { id 'java' }\n")
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    assert plan.steps == ()
+    assert any("without a committed gradlew wrapper" in item for item in plan.warnings)
+    assert any("No supported root-level baseline" in item for item in plan.warnings)
+
+
+def test_quick_selects_one_alternative_java_build_and_full_runs_both(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pom.xml").write_text("<project />\n", encoding="utf-8")
+    (tmp_path / "mvnw").write_text("#!/bin/sh\n", encoding="utf-8")
+    (tmp_path / "build.gradle").write_text("plugins { id 'java' }\n")
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    quick = detect_plan(_repository(), tmp_path)
+    full = detect_plan(_repository(), tmp_path, "full")
+
+    assert [step.ecosystem for step in quick.steps] == ["maven"]
+    assert any(
+        "selects Maven" in warning and "profile 'full' runs both" in warning
+        for warning in quick.warnings
+    )
+    assert [step.ecosystem for step in full.steps] == ["maven", "gradle"]
+
+
+def test_quick_prefers_committed_gradle_wrapper_over_image_maven(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pom.xml").write_text("<project />\n", encoding="utf-8")
+    (tmp_path / "build.gradle").write_text("plugins { id 'java' }\n")
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    assert [step.ecosystem for step in plan.steps] == ["gradle"]
+    assert any("selects Gradle" in warning for warning in plan.warnings)
+
+
+@pytest.mark.parametrize("ecosystem", ["maven", "gradle"])
+def test_java_dependency_identity_includes_wrapper_configuration(
+    tmp_path: Path,
+    ecosystem: str,
+) -> None:
+    if ecosystem == "maven":
+        (tmp_path / "pom.xml").write_text("<project />\n", encoding="utf-8")
+        wrapper = tmp_path / ".mvn" / "wrapper"
+        image = "docker.io/library/maven:3.9-eclipse-temurin-21"
+    else:
+        (tmp_path / "build.gradle").write_text("plugins { id 'java' }\n")
+        wrapper = tmp_path / "gradle" / "wrapper"
+        image = "docker.io/library/eclipse-temurin:21-jdk-noble"
+    wrapper.mkdir(parents=True)
+    properties = wrapper / (
+        "maven-wrapper.properties"
+        if ecosystem == "maven"
+        else "gradle-wrapper.properties"
+    )
+    properties.write_text("first\n", encoding="utf-8")
+
+    first = _dependency_fingerprint(tmp_path, ecosystem, image)
+    properties.write_text("second\n", encoding="utf-8")
+    second = _dependency_fingerprint(tmp_path, ecosystem, image)
+
+    assert first != second
+
+
 def test_cargo_workspace_members_are_covered_by_the_root_step(tmp_path: Path) -> None:
     (tmp_path / "Cargo.toml").write_text(
         """
@@ -538,6 +809,8 @@ def test_no_supported_manifest_is_explicit(tmp_path: Path) -> None:
     [
         ("pyproject.toml", "[project]\nname='outside'\n"),
         ("setup.py", "raise SystemExit('must not execute')\n"),
+        ("pom.xml", "<project />\n"),
+        ("gradlew", "#!/bin/sh\n"),
     ],
 )
 def test_manifest_symlink_cannot_escape_checkout(

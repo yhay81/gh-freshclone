@@ -6,6 +6,25 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.9.0
+
+- Add conservative Maven and Gradle automatic baselines. Both prepare
+  dependencies with network access and rerun the selected lifecycle offline in
+  a separate credential-free container; committed wrappers and Java toolchain
+  declarations participate in evidence and cache identity. Java dependency
+  state uses app-managed volumes to avoid host UID/permission coupling without
+  widening container capabilities.
+- Make Maven offline execution robust to dynamically selected Surefire
+  providers and JUnit Platform launcher artifacts that
+  `dependency:go-offline` alone omits.
+- Select compatible Gradle JDK 17/21/25 images from wrapper and literal
+  toolchain evidence, preload test runtime classpaths with a static trusted
+  init script, and keep Gradle workers bounded across concurrent repositories.
+- Preserve early network, legal-agreement, and Java-toolchain error lines past
+  the ordinary log tail. Runtime downloads blocked by the offline policy,
+  missing toolchains, and required external agreements now produce actionable
+  `ENVIRONMENT_GAP` diagnostics rather than generic test failures.
+
 ## 0.8.0
 
 - Compile conservative Python baselines for committed `setup.py`/`setup.cfg`

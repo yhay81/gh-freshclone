@@ -228,6 +228,118 @@ def test_legacy_python_child_process_stays_in_prepared_venv(
         _cleanup_test_volumes()
 
 
+def test_maven_dependencies_cross_the_offline_phase_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "maven-repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repository)],
+        check=True,
+        capture_output=True,
+    )
+    (repository / "pom.xml").write_text(
+        """
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId>
+  <artifactId>offline-boundary</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.11.4</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.5.2</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+""".lstrip(),
+        encoding="utf-8",
+    )
+    test_source = repository / "src" / "test" / "java" / "example"
+    test_source.mkdir(parents=True)
+    (test_source / "BaselineTest.java").write_text(
+        """
+package example;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import org.junit.jupiter.api.Test;
+
+class BaselineTest {
+    @Test
+    void dependenciesRemainAvailableOffline() {
+        assertEquals(4, 2 + 2);
+    }
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path / "maven-e2e-cache"))
+    try:
+        receipt, _, _ = check_repository(
+            str(repository),
+            runner=E2E_RUNNER,
+            use_cache=False,
+            echo=True,
+        )
+
+        assert isinstance(receipt, Receipt)
+        assert receipt.status == "pass", receipt.to_dict()
+        assert receipt.plan.steps[0].ecosystem == "maven"
+        assert receipt.results[0].test_network == "none"
+        assert receipt.results[0].failed_phase is None
+        assert receipt.results[0].prepare_cache_hit is False
+        log = Path(receipt.results[0].log_path).read_text(encoding="utf-8")
+        assert "prepare (network enabled) phase" in log
+        assert "test (network none) phase" in log
+        assert "Tests run: 1, Failures: 0, Errors: 0, Skipped: 0" in log
+    finally:
+        _cleanup_test_volumes()
+
+
 def test_test_network_requires_operator_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

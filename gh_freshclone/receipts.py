@@ -152,7 +152,7 @@ def prepared_volume_name(
     step: CheckStep,
     profile: str,
 ) -> str:
-    """Return a deterministic OCI-managed volume for exact-commit Python envs."""
+    """Return a deterministic OCI-managed volume for prepared dependencies."""
 
     repository_key = _repository_namespace(repository).rsplit("-", 1)[-1]
     profile_key = _safe_name(profile)[:8]

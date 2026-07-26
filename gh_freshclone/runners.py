@@ -25,7 +25,11 @@ from .cache import (
     touch_dependency_cache,
 )
 from .constants import RUNNER_CONTROL_TIMEOUT_SECONDS
-from .diagnostics import diagnose_failure, failure_executable_candidates
+from .diagnostics import (
+    diagnose_failure,
+    failure_executable_candidates,
+    is_diagnostic_output,
+)
 from .model import CheckStep
 from .process import run
 from .receipts import cache_namespace, execution_cache_key
@@ -243,6 +247,16 @@ def _cache_environment(
             "GOMODCACHE=/cache/go-mod",
             "GOCACHE=/cache/go-build",
         )
+    if ecosystem == "maven":
+        return (
+            "MAVEN_USER_HOME=/cache/maven-home",
+            "MAVEN_OPTS=-XX:MaxRAMPercentage=75.0",
+        )
+    if ecosystem == "gradle":
+        return (
+            "GRADLE_USER_HOME=/cache/gradle",
+            "GRADLE_OPTS=-Dorg.gradle.daemon=false -Dorg.gradle.workers.max=2",
+        )
     return ()
 
 
@@ -270,7 +284,15 @@ def _prepare_marker_paths(
         if support_volume:
             markers.append(f"/prepared/{_PREPARE_MARKER}")
         return tuple(markers)
-    if effective_cache and step.ecosystem in {"deno", "rust", "go"}:
+    if effective_volume and step.ecosystem in {"maven", "gradle"}:
+        return (f"/cache/{_PREPARE_MARKER}",)
+    if effective_cache and step.ecosystem in {
+        "deno",
+        "rust",
+        "go",
+        "maven",
+        "gradle",
+    }:
         return (f"/cache/{_PREPARE_MARKER}",)
     return ()
 
@@ -354,7 +376,8 @@ def build_runner_command(
         if (
             cache_dir
             and not (
-                step.ecosystem in {"python", "node", "bun", "deno"}
+                step.ecosystem
+                in {"python", "node", "bun", "deno", "maven", "gradle"}
                 and prepared_volume
             )
         )
@@ -432,6 +455,10 @@ def build_runner_command(
                 f"--volume={prepared_volume}:"
                 f"{working_directory}/node_modules"
             )
+        elif prepared_volume and step.ecosystem in {"maven", "gradle"}:
+            command.append(
+                f"--mount=type=volume,source={prepared_volume},target=/cache"
+            )
         if support_volume:
             command.append(
                 f"--mount=type=volume,source={support_volume},target=/prepared"
@@ -486,6 +513,8 @@ def build_runner_command(
                     f"{prepared_volume}:{working_directory}/node_modules",
                 )
             )
+        elif prepared_volume and step.ecosystem in {"maven", "gradle"}:
+            command.extend(("--volume", f"{prepared_volume}:/cache"))
         if support_volume:
             command.extend(("--volume", f"{support_volume}:/prepared"))
         if container_name:
@@ -662,30 +691,10 @@ def _execute_phase(
                 tail.append(sampled_line.rstrip()[-2_000:])
                 if len(tail) > 20:
                     tail.pop(0)
-                lowered = line.lower()
                 failure_candidates.update(
                     failure_executable_candidates(sampled_line)
                 )
-                if any(
-                    marker in lowered
-                    for marker in (
-                        "command not found",
-                        "executable file not found",
-                        "no such file or directory",
-                        "permissionerror",
-                        "fatalerror",
-                        "executable `",
-                        "network is unreachable",
-                        "temporary failure in name resolution",
-                        "could not resolve host",
-                        "name or service not known",
-                        "failed to lookup address information",
-                        "dns error:",
-                        "enetunreach",
-                        "eai_again",
-                        "getaddrinfo",
-                    )
-                ):
+                if is_diagnostic_output(sampled_line):
                     diagnostics.append(sampled_line.rstrip()[-2_000:])
                     if len(diagnostics) > 20:
                         diagnostics.pop(0)
@@ -903,7 +912,14 @@ def run_step(
     image_identity = resolve_image_identity(runner, step.image)
     cache_key = execution_cache_key(step, image_identity)
     image_key = hashlib.sha256(image_identity.encode()).hexdigest()[:12]
-    stateful_ecosystems = {"python", "node", "bun", "deno"}
+    stateful_ecosystems = {
+        "python",
+        "node",
+        "bun",
+        "deno",
+        "maven",
+        "gradle",
+    }
     effective_volume = (
         f"{prepared_volume}-i{image_key}"
         if (
