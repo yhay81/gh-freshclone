@@ -627,3 +627,44 @@ is at least 96.8% faster than the observed per-file copy lower bound. A
 deliberately generic filesystem archive reached 156.44 MiB because it included
 an untracked partial `vendor/` tree; the exact Git-object archive excluded that
 state, providing a security improvement as well as the performance gain.
+
+## Composer/PHPUnit baseline follow-up — 2026-07-26
+
+The PHP baseline requires a committed `composer.json` and `composer.lock`, a
+direct `phpunit/phpunit` declaration that is present in the lock, and
+Composer's ordinary `vendor/` and `vendor/bin/` layout. Networked preparation
+uses the official multi-architecture `composer:2.10.1` image and installs the
+exact lock with both plugins and scripts disabled. The repository cannot run
+code while dependencies are being acquired. Vendor and Composer cache state
+live in an exact-commit, image-scoped managed volume.
+
+The test container receives a fresh exact-commit workspace and no network.
+The prepared volume is mounted read-only and its `vendor/` snapshot is copied
+inside the container into that disposable workspace. It sets
+`COMPOSER_DISABLE_NETWORK=1`, disables the redundant second policy lookup, and
+replays the no-change Composer install lifecycle there. Security blocking was
+already applied during networked preparation; required autoload/install hooks
+now run only inside the offline sandbox and cannot mutate reusable state,
+then the runner invokes the locked `vendor/bin/phpunit`. A lock containing any
+package of type
+`composer-plugin` is rejected during planning: plugin effects cannot be
+reliably separated from installation after the fact, so the automatic path
+does not guess.
+
+The manifest-only controls were:
+
+| Repository | Result | Reason |
+|---|---|---|
+| `mockery/mockery` | Composer/PHPUnit | direct locked PHPUnit, no plugins |
+| `ramsey/uuid` | rejected | four executable Composer plugins in the lock |
+| `sebastianbergmann/phpunit` | rejected | no direct self-dependency on PHPUnit |
+
+The physical public proof used
+`mockery/mockery@3a80322e874fbdce4e87e739456fe48d48a527c8`.
+Fresh dependency preparation took 7.994 seconds. The second container had
+`test_network=none` and reported 705 tests, 1,105 assertions, and 10 skips;
+total elapsed time was 23.963 seconds. An immediate `--no-cache` repeat
+verified a preparation-cache hit, replayed install hooks, reran the same
+offline PHPUnit suite, and completed in 16.661 seconds. The resolved image
+identity was
+`composer@sha256:7725eb4545c438629ae8bde3ef0bb9a5038ef566126ad878442a69007242d267`.

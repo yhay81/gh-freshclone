@@ -61,7 +61,7 @@ def test_bundled_receipt_schema_matches_current_version() -> None:
     assert schema["properties"]["receipt_version"]["const"] == 6
     assert schema["properties"]["execution_policy_version"]["type"] == "integer"
     assert schema["$defs"]["plan"]["properties"]["plan_version"]["type"] == "integer"
-    assert EXECUTION_POLICY_VERSION == 18
+    assert EXECUTION_POLICY_VERSION == 19
     assert PLAN_VERSION == 8
 
 

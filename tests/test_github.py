@@ -230,6 +230,56 @@ def test_plan_materialization_keeps_dotnet_solution_and_project_manifests(
     assert any(step.ecosystem == "dotnet" for step in plan.steps)
 
 
+def test_plan_materialization_keeps_composer_lock_and_phpunit_configuration(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    (git_repository / "composer.json").write_text(
+        '{"require-dev":{"phpunit/phpunit":"^11.5"}}\n',
+        encoding="utf-8",
+    )
+    (git_repository / "composer.lock").write_text(
+        '{"content-hash":"locked","packages":[],"packages-dev":['
+        '{"name":"phpunit/phpunit","version":"11.5.42","type":"library"}]}\n',
+        encoding="utf-8",
+    )
+    (git_repository / "phpunit.xml.dist").write_text(
+        "<phpunit />\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "composer baseline",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    repository = resolve_repository(str(git_repository))
+    checkout = tmp_path / "checkout"
+
+    materialize_plan_inputs(repository, checkout)
+
+    assert (checkout / "composer.json").is_file()
+    assert (checkout / "composer.lock").is_file()
+    assert (checkout / "phpunit.xml.dist").is_file()
+    plan = detect_plan(repository, checkout)
+    assert any(step.ecosystem == "php" for step in plan.steps)
+
+
 def test_plan_materialization_keeps_declared_node_entrypoints(
     git_repository: Path,
     tmp_path: Path,

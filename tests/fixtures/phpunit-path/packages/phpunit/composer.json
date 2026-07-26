@@ -1,0 +1,8 @@
+{
+  "name": "phpunit/phpunit",
+  "version": "99.0.0",
+  "type": "library",
+  "bin": [
+    "phpunit"
+  ]
+}

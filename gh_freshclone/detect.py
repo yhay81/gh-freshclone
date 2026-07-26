@@ -23,6 +23,7 @@ BOOTSTRAP_CMAKE_VERSION = "3.31.10"
 BOOTSTRAP_NINJA_VERSION = "1.13.0"
 MAVEN_IMAGE = "docker.io/library/maven:3.9-eclipse-temurin-21"
 CMAKE_IMAGE = "docker.io/library/python:3.13-bookworm"
+COMPOSER_IMAGE = "docker.io/library/composer:2.10.1"
 SUPPORTED_DOTNET_MAJORS = frozenset({8, 9, 10})
 _CMAKE_TEST_OPTION = re.compile(
     r"(?:^|_)(?:BUILD_?TESTS?|TESTS?)$",
@@ -101,6 +102,12 @@ _DEPENDENCY_FILES = {
         "NuGet.config",
         "nuget.config",
     ),
+    "php": (
+        "composer.json",
+        "composer.lock",
+        "phpunit.xml",
+        "phpunit.xml.dist",
+    ),
 }
 _ROOT_INPUT_FILES = {
     CONFIG_NAME,
@@ -122,6 +129,7 @@ NESTED_MANIFEST_NAMES = frozenset(
         "build.gradle",
         "build.gradle.kts",
         "CMakeLists.txt",
+        "composer.json",
     }
 )
 _HASH_CHUNK_BYTES = 1024 * 1024
@@ -1137,6 +1145,139 @@ def _detect_gradle(
     )
 
 
+def _detect_php(root: Path, profile: str) -> tuple[CheckStep | None, list[str]]:
+    composer_path = root / "composer.json"
+    lock_path = root / "composer.lock"
+    if not composer_path.is_file():
+        return None, []
+    if not lock_path.is_file():
+        return None, [
+            (
+                "composer.json was found without composer.lock; automatic PHP "
+                "execution requires an exact dependency lock."
+            )
+        ]
+
+    composer = _read_json(composer_path)
+    lock = _read_json(lock_path)
+    if not composer or not lock:
+        return None, [
+            (
+                "composer.json or composer.lock is not a readable JSON object; "
+                "use .gh-freshclone.toml for an explicit baseline."
+            )
+        ]
+    if not isinstance(lock.get("content-hash"), str):
+        return None, [
+            (
+                "composer.lock has no content-hash; regenerate the lock before "
+                "using the automatic PHP baseline."
+            )
+        ]
+
+    config = composer.get("config")
+    config = config if isinstance(config, dict) else {}
+    vendor_directory = config.get("vendor-dir", "vendor")
+    binary_directory = config.get("bin-dir", "vendor/bin")
+    if vendor_directory != "vendor" or binary_directory != "vendor/bin":
+        return None, [
+            (
+                "Composer uses a non-default vendor-dir or bin-dir; use "
+                ".gh-freshclone.toml to describe that layout explicitly."
+            )
+        ]
+
+    direct_section = ""
+    for section_name in ("require-dev", "require"):
+        section = composer.get(section_name)
+        if isinstance(section, dict) and isinstance(
+            section.get("phpunit/phpunit"),
+            str,
+        ):
+            direct_section = section_name
+            break
+    if not direct_section:
+        return None, [
+            (
+                "Composer does not directly declare phpunit/phpunit; automatic "
+                "execution will not infer a transitive or globally installed test runner."
+            )
+        ]
+
+    packages: list[dict[str, Any]] = []
+    for section_name in ("packages", "packages-dev"):
+        section = lock.get(section_name)
+        if isinstance(section, list):
+            packages.extend(
+                package for package in section if isinstance(package, dict)
+            )
+    phpunit = next(
+        (
+            package
+            for package in packages
+            if package.get("name") == "phpunit/phpunit"
+        ),
+        None,
+    )
+    if phpunit is None or not isinstance(phpunit.get("version"), str):
+        return None, [
+            (
+                "composer.lock does not contain the directly declared PHPUnit "
+                "package; refresh the lock before automatic execution."
+            )
+        ]
+    plugins = sorted(
+        {
+            str(package.get("name"))
+            for package in packages
+            if package.get("type") == "composer-plugin"
+            and isinstance(package.get("name"), str)
+        }
+    )
+    if plugins:
+        return None, [
+            (
+                "The locked Composer graph contains executable plugins. Automatic "
+                "networked preparation disables plugins, so use .gh-freshclone.toml "
+                "only after reviewing the required plugin behavior: "
+                + ", ".join(plugins[:5])
+            )
+        ]
+
+    evidence = [
+        "composer.json",
+        "composer.lock",
+        f"{direct_section}.phpunit/phpunit",
+        f"composer.lock:phpunit/phpunit@{phpunit['version']}",
+        f"profile.{profile}",
+    ]
+    for name in ("phpunit.xml", "phpunit.xml.dist"):
+        if (root / name).is_file():
+            evidence.append(name)
+            break
+    return (
+        _step(
+            root,
+            "php",
+            COMPOSER_IMAGE,
+            (
+                "COMPOSER_DISABLE_NETWORK=1 "
+                "COMPOSER_CACHE_DIR=/tmp/composer-cache "
+                "COMPOSER_HOME=/tmp/composer-home composer install "
+                "--no-interaction --no-ansi --no-progress "
+                "--prefer-dist --no-plugins --no-blocking "
+                "&& TERM=dumb COLUMNS=120 vendor/bin/phpunit --colors=never"
+            ),
+            evidence,
+            prepare_command=(
+                "composer install --no-interaction --no-ansi --no-progress "
+                "--prefer-dist --no-plugins --no-scripts"
+            ),
+        ),
+        [],
+    )
+
+
 def _detect_cmake(
     root: Path,
     profile: str,
@@ -1563,6 +1704,7 @@ def detect_plan(
     go = _detect_go(root)
     maven = _detect_maven(root, profile)
     gradle, gradle_warnings = _detect_gradle(root, profile)
+    php, php_warnings = _detect_php(root, profile)
     cmake, cmake_warnings = _detect_cmake(root, profile)
     dotnet, dotnet_warnings = _detect_dotnet(root, profile)
     if maven and gradle and profile != "full":
@@ -1576,13 +1718,14 @@ def detect_plan(
             f"Both Maven and Gradle baselines were found; profile {profile!r} "
             f"selects {selected_java}, while profile 'full' runs both."
         )
-    for step in (rust, node, python, go, maven, gradle, cmake, dotnet):
+    for step in (rust, node, python, go, maven, gradle, php, cmake, dotnet):
         if step:
             steps.append(step)
     warnings.extend(rust_warnings)
     warnings.extend(node_warnings)
     warnings.extend(python_warnings)
     warnings.extend(gradle_warnings)
+    warnings.extend(php_warnings)
     warnings.extend(cmake_warnings)
     warnings.extend(dotnet_warnings)
 
@@ -1590,7 +1733,7 @@ def detect_plan(
         warnings.append(
             "No supported root-level baseline was found. "
             "Automatic support covers Python, Node.js/Bun/Deno, Rust, Go, "
-            "Maven, Gradle, CMake, and .NET; "
+            "Maven, Gradle, Composer/PHPUnit, CMake, and .NET; "
             "use .gh-freshclone.toml for an explicit layout."
         )
     nested = sorted(

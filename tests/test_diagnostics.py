@@ -136,6 +136,25 @@ def test_missing_gradle_java_toolchain_is_an_environment_gap() -> None:
     assert diagnostics[0].kind == "missing_java_toolchain"
 
 
+def test_missing_locked_php_extension_is_an_environment_gap() -> None:
+    detail = (
+        "phpunit/phpunit 11.5.42 requires ext-imagick * -> "
+        "it is missing from your system. Install or enable PHP's imagick extension."
+    )
+
+    assert is_diagnostic_output(detail)
+    status, diagnostics = diagnose_failure(
+        2,
+        detail,
+        test_network="enabled",
+        failed_phase="prepare",
+    )
+
+    assert status == "environment_gap"
+    assert diagnostics[0].kind == "php_platform_requirement"
+    assert diagnostics[0].subject == "ext-imagick"
+
+
 def test_prepare_unknown_host_is_infrastructure_failure() -> None:
     status, diagnostics = diagnose_failure(
         1,
