@@ -17,7 +17,21 @@ DEFAULT_PYTHON_MINOR = 13
 DEFAULT_NODE_MAJOR = 24
 BOOTSTRAP_UV_VERSION = "0.11.32"
 BOOTSTRAP_BUN_VERSION = "1.3.14"
+BOOTSTRAP_CMAKE_VERSION = "3.31.10"
+BOOTSTRAP_NINJA_VERSION = "1.13.0"
 MAVEN_IMAGE = "docker.io/library/maven:3.9-eclipse-temurin-21"
+CMAKE_IMAGE = "docker.io/library/python:3.13-bookworm"
+_CMAKE_TEST_OPTION = re.compile(
+    r"(?:^|_)(?:BUILD_?TESTS?|TESTS?)$",
+    re.IGNORECASE,
+)
+_CMAKE_EXPENSIVE_TEST_OPTION = re.compile(
+    r"(?:^|_)(?:"
+    r"BENCH|CONFORMANCE|CUDA|EXAMPLE|FUZZ|HO|INTEGRATION|PEDANTIC|"
+    r"PERFORMANCE|SANITIZE|SYSTEM"
+    r")(?:_|$)",
+    re.IGNORECASE,
+)
 _PREPARED_PYTEST_COMMAND = (
     "PATH=/prepared/venv/bin:$PATH "
     "/prepared/venv/bin/python -m pytest -q"
@@ -66,6 +80,15 @@ _DEPENDENCY_FILES = {
         "gradle/libs.versions.toml",
         "gradle/wrapper/gradle-wrapper.properties",
     ),
+    "cmake": (
+        "CMakeLists.txt",
+        "CMakePresets.json",
+        "CMakeUserPresets.json",
+        "vcpkg.json",
+        "vcpkg-configuration.json",
+        "conanfile.txt",
+        "conanfile.py",
+    ),
 }
 _ROOT_INPUT_FILES = {
     CONFIG_NAME,
@@ -85,6 +108,7 @@ NESTED_MANIFEST_NAMES = frozenset(
         "pom.xml",
         "build.gradle",
         "build.gradle.kts",
+        "CMakeLists.txt",
     }
 )
 _HASH_CHUNK_BYTES = 1024 * 1024
@@ -1058,6 +1082,153 @@ def _detect_gradle(
     )
 
 
+def _detect_cmake(
+    root: Path,
+    profile: str,
+) -> tuple[CheckStep | None, list[str]]:
+    manifest = root / "CMakeLists.txt"
+    if not manifest.is_file():
+        return None, []
+    try:
+        text = manifest.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return (
+            None,
+            [
+                (
+                    "The root CMakeLists.txt could not be read as UTF-8; use "
+                    ".gh-freshclone.toml for an explicit baseline."
+                )
+            ],
+        )
+    source = re.sub(
+        r"#\[(?P<equals>=*)\[.*?\](?P=equals)\]",
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+
+    minimum = re.search(
+        r"(?im)^[ \t]*cmake_minimum_required[ \t]*\("
+        r"[ \t]*VERSION[ \t]+(\d+(?:\.\d+){0,3})",
+        source,
+    )
+    if minimum:
+        required = tuple(int(part) for part in minimum.group(1).split("."))
+        available = tuple(int(part) for part in BOOTSTRAP_CMAKE_VERSION.split("."))
+        width = max(len(required), len(available))
+        if required + (0,) * (width - len(required)) > available + (0,) * (
+            width - len(available)
+        ):
+            return (
+                None,
+                [
+                    (
+                        f"CMake requires version {minimum.group(1)}, newer than "
+                        f"the automatic {BOOTSTRAP_CMAKE_VERSION} baseline; use "
+                        ".gh-freshclone.toml for an explicit image."
+                    )
+                ],
+            )
+
+    test_signal = re.search(
+        r"(?im)^[ \t]*(?:"
+        r"enable_testing[ \t]*\("
+        r"|include[ \t]*\([ \t]*CTest(?:[ \t\)])"
+        r"|add_test[ \t]*\()",
+        source,
+    )
+    if not test_signal:
+        return (
+            None,
+            [
+                (
+                    "The root CMakeLists.txt has no literal CTest signal "
+                    "(include(CTest), enable_testing(), or add_test()); use "
+                    ".gh-freshclone.toml for an explicit baseline."
+                )
+            ],
+        )
+
+    signal = test_signal.group(0).strip().split("(", maxsplit=1)[0].strip()
+    test_options = []
+    for option in re.finditer(
+        r'(?im)^[ \t]*option[ \t]*\([ \t]*'
+        r"([A-Za-z_][A-Za-z0-9_]*)[ \t]+"
+        r'"([^"\r\n]*)"',
+        source,
+    ):
+        name, description = option.groups()
+        if (
+            (name.casefold() == "build_testing" or _CMAKE_TEST_OPTION.search(name))
+            and not _CMAKE_EXPENSIVE_TEST_OPTION.search(name)
+            and re.search(r"\b(?:build|generate)\b", description, re.IGNORECASE)
+            and re.search(r"\btests?\b", description, re.IGNORECASE)
+        ):
+            test_options.append(name)
+    test_option = min(
+        set(test_options),
+        key=lambda name: (len(name), name.casefold()),
+        default=None,
+    )
+    evidence = [
+        "CMakeLists.txt",
+        f"ctest.{signal.lower()}",
+        f"bootstrap.cmake.{BOOTSTRAP_CMAKE_VERSION}",
+        f"bootstrap.ninja.{BOOTSTRAP_NINJA_VERSION}",
+        f"profile.{profile}",
+    ]
+    option_argument = ""
+    if test_option:
+        evidence.append(f"test-option.{test_option}")
+        option_argument = f"-D{test_option}=ON "
+    if (root / "CMakePresets.json").is_file():
+        evidence.append("CMakePresets.json")
+    configure_options = (
+        "-G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON "
+        f"{option_argument}"
+        "-DFETCHCONTENT_BASE_DIR=/prepared/fetchcontent"
+    )
+    prepare_tools = (
+        "python -m pip install --disable-pip-version-check --no-input "
+        "--no-cache-dir --root-user-action=ignore "
+        "--target /prepared/tools "
+        f"cmake=={BOOTSTRAP_CMAKE_VERSION} "
+        f"ninja=={BOOTSTRAP_NINJA_VERSION}"
+    )
+    fetchcontent_cleanup = (
+        "mkdir -p /prepared/fetchcontent && "
+        "find /prepared/fetchcontent -mindepth 1 -maxdepth 1 "
+        "-type d \\( -name '*-build' -o -name '*-subbuild' \\) "
+        "-exec rm -rf -- {} +"
+    )
+    return (
+        _step(
+            root,
+            "cmake",
+            CMAKE_IMAGE,
+            (
+                "export PATH=/prepared/tools/bin:$PATH && "
+                f"{fetchcontent_cleanup} && "
+                "cmake -S . -B .gh-freshclone-build "
+                f"{configure_options} "
+                "-DFETCHCONTENT_FULLY_DISCONNECTED=ON && "
+                "cmake --build .gh-freshclone-build --parallel 2 && "
+                "ctest --test-dir .gh-freshclone-build "
+                "--parallel 2 --output-on-failure --no-tests=error"
+            ),
+            evidence,
+            prepare_command=(
+                f"{prepare_tools} && "
+                "export PATH=/prepared/tools/bin:$PATH && "
+                "cmake -S . -B /tmp/gh-freshclone-cmake-prepare "
+                f"{configure_options} && {fetchcontent_cleanup}"
+            ),
+        ),
+        [],
+    )
+
+
 def _cargo_workspace_owns(root: Path, manifest: Path) -> bool:
     cargo = _read_toml(root / "Cargo.toml")
     workspace = cargo.get("workspace")
@@ -1100,6 +1271,7 @@ def detect_plan(
     go = _detect_go(root)
     maven = _detect_maven(root, profile)
     gradle, gradle_warnings = _detect_gradle(root, profile)
+    cmake, cmake_warnings = _detect_cmake(root, profile)
     if maven and gradle and profile != "full":
         if (root / "mvnw").is_file():
             selected_java = "Maven"
@@ -1111,19 +1283,20 @@ def detect_plan(
             f"Both Maven and Gradle baselines were found; profile {profile!r} "
             f"selects {selected_java}, while profile 'full' runs both."
         )
-    for step in (rust, node, python, go, maven, gradle):
+    for step in (rust, node, python, go, maven, gradle, cmake):
         if step:
             steps.append(step)
     warnings.extend(rust_warnings)
     warnings.extend(node_warnings)
     warnings.extend(python_warnings)
     warnings.extend(gradle_warnings)
+    warnings.extend(cmake_warnings)
 
     if not steps:
         warnings.append(
             "No supported root-level baseline was found. "
             "Automatic support covers Python, Node.js/Bun/Deno, Rust, Go, "
-            "Maven, and Gradle; "
+            "Maven, Gradle, and CMake; "
             "use .gh-freshclone.toml for an explicit layout."
         )
     nested = sorted(

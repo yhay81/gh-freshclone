@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
-PLAN_VERSION = 6
+PLAN_VERSION = 7
 RECEIPT_VERSION = 6
 EXECUTION_POLICY_VERSION = 16
 _MEMORY_LIMIT = re.compile(

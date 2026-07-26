@@ -13,8 +13,8 @@ JSON receipt. It distinguishes repository test failures from runner failures
 and missing environment capabilities.
 
 Automatic detection covers root-level Python, Node.js/Bun/Deno, Rust, Go,
-Maven, and Gradle projects. A repository-owned configuration compiles explicit
-monorepo steps. The package is alpha software.
+Maven, Gradle, and CMake projects. A repository-owned configuration compiles
+explicit monorepo steps. The package is alpha software.
 
 ## Why it exists
 
@@ -56,7 +56,7 @@ Until the package is registered on PyPI, install the signed release tag
 directly from GitHub:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.10.0"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.11.0"
 gh-freshclone doctor
 ```
 
@@ -229,6 +229,19 @@ initialization failures as a JSON error envelope on standard output:
   lifecycle is rerun from a fresh read-only checkout with Maven offline mode
   or Gradle `--offline` in a network-disabled container. Managed volumes avoid
   host UID/permission coupling without granting broader container privileges.
+- CMake planning requires a literal root CTest signal and refuses a declared
+  minimum newer than its pinned CMake runtime. It conservatively enables one
+  ordinary project test option when the committed `option(...)` name and
+  description identify it, while excluding CUDA, conformance, sanitizer,
+  benchmark, and integration variants.
+- CMake 3.31.10 and Ninja 1.13.0 are installed into an exact-commit managed
+  volume during the network-enabled preparation phase of a common
+  multi-architecture Python/buildpack image. A configure-only preparation
+  populates declared FetchContent sources in that volume. A fresh
+  configuration, two-worker build, and CTest then run with
+  `FETCHCONTENT_FULLY_DISCONNECTED=ON` and no container network; compiled
+  outputs are not reused. `ctest --no-tests=error` prevents a zero-test build
+  from becoming a false PASS.
 - Canonical CPU and memory limits are recorded in receipt v6 and participate
   in receipt and PASS-index identity; a proof produced at `2 CPU / 4g` is
   never reused for an `8g` request.
@@ -282,12 +295,20 @@ p95 because local Git metadata and commit resolution use one process. CI
 fails if the same clone-free path exceeds 250 ms p95 on its Linux runner.
 These are development measurements, not cross-platform guarantees.
 
-A public-repository trial across eight automatic ecosystems, including the
-defects discovered during real execution and measured cold/warm results, is recorded in
+A public-repository trial across eight earlier automatic ecosystems, including
+the defects discovered during real execution and measured cold/warm results,
+is recorded in
 [`docs/field-trial-2026-07-25.md`](docs/field-trial-2026-07-25.md).
 On the final dual-build Java target, verified dependency reuse reduced an
 otherwise fresh end-to-end Maven-plus-Gradle proof from 897.90 to 318.27
 seconds while rerunning both offline lifecycles.
+
+The CMake follow-up planned ten current public repositories and accepted eight
+with root test evidence. A physical proof of
+`fmtlib/fmt@2a2d9edb257322bec0f7ac602fde3b382fe0082a` compiled and passed all
+21 CTest cases with the test container offline. The first end-to-end check took
+175.09 seconds, including 9.97 seconds of fresh preparation and 156.65 seconds
+of build/test runner time. Reusing that exact PASS returned in 0.42 seconds.
 
 A fresh probe of public pull request
 [`pallets/itsdangerous#428`](https://github.com/pallets/itsdangerous/pull/428)

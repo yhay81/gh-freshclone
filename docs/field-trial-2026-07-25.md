@@ -505,3 +505,60 @@ Go, Maven, and Gradle public repositories. The Docker E2E suite then exercised
 the two-stage path physically: the partial checkout expanded before execution,
 and all five runnable cases passed with the Apple-only case skipped in 128.20
 seconds.
+
+## CMake baseline follow-up — 2026-07-26
+
+The largest useful unsupported family in a fresh public-repository cohort was
+C/C++ with root CMake metadata. The automatic baseline stays static during
+planning: it reads the committed root `CMakeLists.txt`, optional presets and
+package manifests, but never evaluates CMake on the host. A literal
+`include(CTest)`, `enable_testing()`, or `add_test()` signal is required.
+Declared minimum versions newer than pinned CMake 3.31.10 return an explicit
+configuration warning instead of guessing a runtime.
+
+Many projects gate tests behind their own option rather than only
+`BUILD_TESTING`. The detector therefore selects at most one literal
+`option(...)` whose name and description identify an ordinary test build. It
+rejects specialized CUDA, conformance, sanitizer, benchmark, integration,
+system, and performance variants. The resulting ten-repository manifest-only
+trial was:
+
+| Repository | Automatic result | Selected project test option |
+|---|---|---|
+| `fmtlib/fmt` | CMake | `FMT_TEST` |
+| `gabime/spdlog` | CMake | `SPDLOG_BUILD_TESTS` |
+| `catchorg/Catch2` | CMake | standard `BUILD_TESTING` path |
+| `google/googletest` | CMake | standard path |
+| `nlohmann/json` | CMake | `JSON_BuildTests` |
+| `CLIUtils/CLI11` | CMake | standard `BUILD_TESTING` path |
+| `jarro2783/cxxopts` | CMake | `CXXOPTS_BUILD_TESTS` |
+| `protocolbuffers/protobuf` | CMake | `protobuf_BUILD_TESTS` |
+| `curl/curl` | rejected | no literal root CTest signal |
+| `eclipse-openj9/openj9` | rejected | no literal root CTest signal |
+
+Preparation first installs fixed CMake 3.31.10 and Ninja 1.13.0 artifacts into
+an exact-commit, image-scoped managed volume. A configure-only pass may fetch
+declared FetchContent sources into the same volume. The second container uses
+a fresh build tree, configures with Ninja and
+`FETCHCONTENT_FULLY_DISCONNECTED=ON`, builds with two workers, and runs CTest
+with two workers, no network, and `--no-tests=error`. Compiled outputs are not
+reused. The common official Python/bookworm build image supplies the ordinary
+GCC/G++/Make/Git environment without the first-use and storage cost of a large
+devcontainer image.
+
+The native Docker E2E first exposed that the CMake wheel's launcher needs its
+target directory on `PYTHONPATH`; preserving only its `bin` directory was
+insufficient across containers. After scoping both paths to the same prepared
+volume, the committed minimal C++ fixture fetched an immutable, SHA-256-checked
+fmt source archive during preparation, configured from that retained source
+offline, compiled, and passed one of one CTest case.
+
+The non-fixture proof used
+`fmtlib/fmt@2a2d9edb257322bec0f7ac602fde3b382fe0082a`. Its exact source expanded
+only after planning found the CMake baseline. Fixed tool preparation took
+9.97 seconds without a prepared-volume cache hit. The second,
+network-disabled container configured, built, and passed all 21 CTest cases in
+156.65 seconds; complete acquisition and execution took 175.09 seconds. No
+test network opt-in or repository credential was supplied. Repeating the
+ordinary exact-commit check reused the PASS receipt and returned in 0.42
+seconds.

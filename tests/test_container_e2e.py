@@ -340,6 +340,109 @@ class BaselineTest {
         _cleanup_test_volumes()
 
 
+def test_cmake_tools_cross_the_offline_phase_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "cmake-repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repository)],
+        check=True,
+        capture_output=True,
+    )
+    (repository / "CMakeLists.txt").write_text(
+        """
+cmake_minimum_required(VERSION 3.20...4.0)
+project(FreshcloneCMakeBoundary LANGUAGES CXX)
+include(CTest)
+include(FetchContent)
+FetchContent_Declare(
+  fmt
+  URL https://github.com/fmtlib/fmt/archive/2a2d9edb257322bec0f7ac602fde3b382fe0082a.tar.gz
+  URL_HASH SHA256=1f3c8b65c29d772ab6185b5c6b663ba323f92031fadcbc47cfce07d4ef075434
+  DOWNLOAD_EXTRACT_TIMESTAMP FALSE
+)
+FetchContent_MakeAvailable(fmt)
+add_executable(freshclone_cmake_test test.cpp)
+target_link_libraries(freshclone_cmake_test PRIVATE fmt::fmt)
+add_test(NAME freshclone_cmake_test COMMAND freshclone_cmake_test)
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (repository / "test.cpp").write_text(
+        """
+#include <fmt/format.h>
+
+int main() {
+    return fmt::format("cmake offline boundary {}", "passed") ==
+                   "cmake offline boundary passed"
+               ? 0
+               : 1;
+}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setenv("GH_FRESHCLONE_CACHE", str(tmp_path / "cmake-e2e-cache"))
+    try:
+        receipt, _, _ = check_repository(
+            str(repository),
+            runner=E2E_RUNNER,
+            use_cache=False,
+            echo=True,
+        )
+
+        assert isinstance(receipt, Receipt)
+        assert receipt.status == "pass", receipt.to_dict()
+        assert receipt.plan.steps[0].ecosystem == "cmake"
+        assert receipt.results[0].test_network == "none"
+        assert receipt.results[0].failed_phase is None
+        assert receipt.results[0].prepare_cache_hit is False
+        assert receipt.results[0].prepared_volume
+        log = Path(receipt.results[0].log_path).read_text(encoding="utf-8")
+        assert "prepare (network enabled) phase" in log
+        assert "test (network none) phase" in log
+        assert "100% tests passed, 0 tests failed out of 1" in log
+
+        repeated, _, repeated_cached = check_repository(
+            str(repository),
+            runner=E2E_RUNNER,
+            use_cache=False,
+            echo=True,
+        )
+
+        assert isinstance(repeated, Receipt)
+        assert repeated.status == "pass", repeated.to_dict()
+        assert repeated_cached is False
+        assert repeated.results[0].prepare_cache_hit is True
+        repeated_log = Path(repeated.results[0].log_path).read_text(encoding="utf-8")
+        assert "Building CXX object" in repeated_log
+        assert "100% tests passed, 0 tests failed out of 1" in repeated_log
+    finally:
+        _cleanup_test_volumes()
+
+
 def test_test_network_requires_operator_opt_in(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
