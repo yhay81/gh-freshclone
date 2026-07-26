@@ -27,9 +27,9 @@ def main() -> int:
     schema = receipt_schema()
     if schema["properties"]["receipt_version"]["const"] != 6:
         raise SystemExit("receipt v6 schema is missing from the distribution")
-    if PLAN_VERSION != 8:
+    if PLAN_VERSION != 9:
         raise SystemExit("unexpected plan version")
-    if EXECUTION_POLICY_VERSION != 20:
+    if EXECUTION_POLICY_VERSION != 21:
         raise SystemExit("unexpected execution policy version")
     if GITHUB_STATUS_VERSION != 1:
         raise SystemExit("unexpected GitHub status interface version")

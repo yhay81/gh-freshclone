@@ -12,6 +12,7 @@ from gh_freshclone.detect import (
     BOOTSTRAP_NINJA_VERSION,
     CMAKE_IMAGE,
     COMPOSER_IMAGE,
+    MAKE_IMAGE,
     RUBY_IMAGE,
     _dependency_fingerprint,
     detect_plan,
@@ -1222,6 +1223,115 @@ def test_cmake_dependency_identity_includes_package_manifests(
     second = _dependency_fingerprint(tmp_path, "cmake", CMAKE_IMAGE)
 
     assert first != second
+
+
+def test_detects_literal_make_test_without_networked_preparation(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Makefile").write_text(
+        ".PHONY: test\n"
+        "test: baseline\n"
+        "\t./baseline\n"
+        "baseline: test.c\n"
+        "\t$(CC) -o $@ $<\n",
+        encoding="utf-8",
+    )
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    assert len(plan.steps) == 1
+    step = plan.steps[0]
+    assert step.ecosystem == "make"
+    assert step.image == MAKE_IMAGE
+    assert step.command == "make -j2 test"
+    assert step.prepare_command == ""
+    assert step.test_network == "none"
+    assert step.evidence == (
+        "Makefile",
+        "Makefile:target.test",
+        "runtime.buildpack-deps.bookworm",
+        "profile.quick",
+    )
+
+
+def test_make_configure_and_profile_target_selection_are_static(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "GNUmakefile").write_text(
+        "check test: all\n"
+        "\t./run-tests\n"
+        "tests ::= ignored-variable\n"
+        "\ttests:\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "configure").write_text(
+        "#!/usr/bin/env bash\nexit 0\n",
+        encoding="utf-8",
+    )
+
+    quick = detect_plan(_repository(), tmp_path, "quick").steps[0]
+    full = detect_plan(_repository(), tmp_path, "full").steps[0]
+
+    assert quick.command == "bash ./configure && make -j2 check"
+    assert "GNUmakefile:target.check" in quick.evidence
+    assert full.command == "bash ./configure && make -j2 test"
+    assert "GNUmakefile:target.test" in full.evidence
+
+
+def test_make_without_literal_target_or_known_configure_fails_closed(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "Makefile"
+    manifest.write_text(
+        "# test: commented\n"
+        "test := variable\n"
+        "all:\n"
+        "\t@true\n",
+        encoding="utf-8",
+    )
+
+    no_target = detect_plan(_repository(), tmp_path)
+
+    assert no_target.steps == ()
+    assert any("no literal ordinary test target" in item for item in no_target.warnings)
+
+    manifest.write_text("test:\n\t@true\n", encoding="utf-8")
+    (tmp_path / "configure").write_text("#!/usr/bin/python\n", encoding="utf-8")
+
+    unknown_configure = detect_plan(_repository(), tmp_path)
+
+    assert unknown_configure.steps == ()
+    assert any("not a bounded UTF-8 sh/bash script" in item for item in unknown_configure.warnings)
+
+
+def test_cmake_prevents_duplicate_make_baseline(tmp_path: Path) -> None:
+    (tmp_path / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.20)\ninclude(CTest)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Makefile").write_text("test:\n\t@true\n", encoding="utf-8")
+
+    plan = detect_plan(_repository(), tmp_path)
+
+    assert [step.ecosystem for step in plan.steps] == ["cmake"]
+    assert not any("Makefile" in item for item in plan.warnings)
+
+
+def test_make_dependency_identity_includes_manifest_and_configure(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "Makefile"
+    configure = tmp_path / "configure"
+    manifest.write_text("test:\n\t@true\n", encoding="utf-8")
+    configure.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+    first = _dependency_fingerprint(tmp_path, "make", MAKE_IMAGE)
+    configure.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    second = _dependency_fingerprint(tmp_path, "make", MAKE_IMAGE)
+    manifest.write_text("check:\n\t@true\n", encoding="utf-8")
+    third = _dependency_fingerprint(tmp_path, "make", MAKE_IMAGE)
+
+    assert len({first, second, third}) == 3
 
 
 def test_detects_quick_dotnet_test_from_slnx_without_evaluating_msbuild(

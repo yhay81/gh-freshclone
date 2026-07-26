@@ -333,6 +333,56 @@ def test_plan_materialization_keeps_bounded_ruby_rake_evidence(
     assert "tasks/test.rake" in ruby.evidence
 
 
+def test_plan_materialization_keeps_make_and_configure_evidence(
+    git_repository: Path,
+    tmp_path: Path,
+) -> None:
+    (git_repository / "Makefile").write_text(
+        "test:\n\t@./tests/run.sh\n",
+        encoding="utf-8",
+    )
+    (git_repository / "configure").write_text(
+        "#!/bin/sh\nexit 0\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(git_repository), "add", "."],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(git_repository),
+            "-c",
+            "user.name=Freshclone Tests",
+            "-c",
+            "user.email=freshclone@example.invalid",
+            "commit",
+            "-m",
+            "make baseline",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    repository = resolve_repository(str(git_repository))
+    checkout = tmp_path / "checkout"
+
+    materialize_plan_inputs(repository, checkout)
+
+    assert (checkout / "Makefile").is_file()
+    assert (checkout / "configure").is_file()
+    make = next(
+        step
+        for step in detect_plan(repository, checkout).steps
+        if step.ecosystem == "make"
+    )
+    assert make.command == "sh ./configure && make -j2 test"
+    assert "configure" in make.evidence
+    assert not (checkout / "tests" / "run.sh").exists()
+
+
 def test_plan_materialization_keeps_declared_node_entrypoints(
     git_repository: Path,
     tmp_path: Path,

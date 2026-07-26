@@ -25,6 +25,7 @@ MAVEN_IMAGE = "docker.io/library/maven:3.9-eclipse-temurin-21"
 CMAKE_IMAGE = "docker.io/library/python:3.13-bookworm"
 COMPOSER_IMAGE = "docker.io/library/composer:2.10.1"
 RUBY_IMAGE = "docker.io/library/ruby:3.4.10-bookworm"
+MAKE_IMAGE = "docker.io/library/buildpack-deps:bookworm"
 SUPPORTED_DOTNET_MAJORS = frozenset({8, 9, 10})
 RUBY_RAKE_TASK_PREFIXES = ("tasks/", "lib/tasks/")
 _RUBYGEMS_REMOTE = "https://rubygems.org/"
@@ -127,6 +128,11 @@ _DEPENDENCY_FILES = {
         ".ruby-version",
         "Rakefile",
         ".rspec",
+    ),
+    "make": (
+        "GNUmakefile",
+        "Makefile",
+        "configure",
     ),
 }
 _ROOT_INPUT_FILES = {
@@ -1815,6 +1821,108 @@ def _detect_cmake(
     )
 
 
+def _literal_make_targets(source: str) -> frozenset[str]:
+    targets: set[str] = set()
+    for match in re.finditer(
+        r"(?m)^ *"
+        r"([A-Za-z0-9_.-]+(?:[ \t]+[A-Za-z0-9_.-]+)*)"
+        r"[ \t]*(?:::(?!=)|:(?![:=]))",
+        source,
+    ):
+        targets.update(match.group(1).split())
+    return frozenset(targets)
+
+
+def _shell_configure_signal(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as source:
+            first_line = source.readline(256).rstrip("\r\n")
+    except (OSError, UnicodeDecodeError):
+        return None
+    if first_line in {"#!/bin/sh", "#! /bin/sh", "#!/usr/bin/env sh"}:
+        return "sh"
+    if first_line in {"#!/bin/bash", "#! /bin/bash", "#!/usr/bin/env bash"}:
+        return "bash"
+    return None
+
+
+def _detect_make(
+    root: Path,
+    profile: str,
+) -> tuple[CheckStep | None, list[str]]:
+    manifest = next(
+        (
+            path
+            for name in ("GNUmakefile", "Makefile")
+            if (path := root / name).is_file()
+        ),
+        None,
+    )
+    if manifest is None:
+        return None, []
+    try:
+        if manifest.stat().st_size > 2 * 1024 * 1024:
+            raise OSError
+        source = manifest.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None, [
+            (
+                f"{manifest.name} is not a bounded readable UTF-8 build file; "
+                "use .gh-freshclone.toml for an explicit baseline."
+            )
+        ]
+
+    available = _literal_make_targets(source)
+    ranking = (
+        ("check", "test", "tests")
+        if profile == "quick"
+        else ("test", "check", "tests")
+    )
+    target = next((name for name in ranking if name in available), None)
+    if target is None:
+        return None, [
+            (
+                f"{manifest.name} has no literal ordinary test target "
+                "(test, tests, or check); automatic execution will not infer "
+                "a target from documentation or CI scripts."
+            )
+        ]
+
+    configure = root / "configure"
+    configure_shell = _shell_configure_signal(configure)
+    if configure.exists() and configure_shell is None:
+        return None, [
+            (
+                "configure is not a bounded UTF-8 sh/bash script; automatic "
+                "Make execution will not guess how to initialize the build."
+            )
+        ]
+
+    command_parts = []
+    evidence = [
+        manifest.name,
+        f"{manifest.name}:target.{target}",
+        "runtime.buildpack-deps.bookworm",
+        f"profile.{profile}",
+    ]
+    if configure_shell is not None:
+        command_parts.append(f"{configure_shell} ./configure")
+        evidence.extend(("configure", f"configure.shell.{configure_shell}"))
+    command_parts.append(f"make -j2 {target}")
+    return (
+        _step(
+            root,
+            "make",
+            MAKE_IMAGE,
+            " && ".join(command_parts),
+            evidence,
+        ),
+        [],
+    )
+
+
 def _dotnet_solution_projects(path: Path) -> tuple[str, ...]:
     try:
         text = path.read_text(encoding="utf-8-sig")
@@ -2097,7 +2205,11 @@ def detect_plan(
     ruby, ruby_warnings = _detect_ruby(root, profile)
     php, php_warnings = _detect_php(root, profile)
     cmake, cmake_warnings = _detect_cmake(root, profile)
+    make, make_warnings = _detect_make(root, profile)
     dotnet, dotnet_warnings = _detect_dotnet(root, profile)
+    if cmake:
+        make = None
+        make_warnings = []
     if maven and gradle and profile != "full":
         if (root / "mvnw").is_file():
             selected_java = "Maven"
@@ -2119,6 +2231,7 @@ def detect_plan(
         ruby,
         php,
         cmake,
+        make,
         dotnet,
     ):
         if step:
@@ -2130,13 +2243,15 @@ def detect_plan(
     warnings.extend(ruby_warnings)
     warnings.extend(php_warnings)
     warnings.extend(cmake_warnings)
+    warnings.extend(make_warnings)
     warnings.extend(dotnet_warnings)
 
     if not steps:
         warnings.append(
             "No supported root-level baseline was found. "
             "Automatic support covers Python, Node.js/Bun/Deno, Rust, Go, "
-            "Maven, Gradle, Ruby/Bundler, Composer/PHPUnit, CMake, and .NET; "
+            "Maven, Gradle, Ruby/Bundler, Composer/PHPUnit, CMake, "
+            "Make/configure, and .NET; "
             "use .gh-freshclone.toml for an explicit layout."
         )
     nested = sorted(

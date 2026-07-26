@@ -704,3 +704,38 @@ reran all 2,179 tests with 254,867 assertions in 74.714 seconds. Assertion
 counts vary with Faker's randomized data, while both runs had zero failures
 and 100% pass rates. The resolved image identity was
 `ruby@sha256:b19a2bd6377adf9723ddd9f6473b84987ffaacd53ffb3b88831b7d065a6f9a8b`.
+
+## Make/configure baseline follow-up — 2026-07-26
+
+A current KAGARI cohort exposed a native-build coverage gap: only 23 of 45
+recent candidates produced an automatic plan, while more than half of the 22
+unsupported roots used conventional Make, configure, or adjacent native build
+layouts. The bounded automatic extension reads only a root `GNUmakefile` or
+`Makefile`, accepts a literal `check`, `test`, or `tests` rule, and optionally
+recognizes a root UTF-8 sh/bash `configure`. It does not execute code while
+planning or infer a command from documentation, CI scripts, recipe bodies,
+variable-expanded targets, or unknown configure entrypoints.
+
+The fixed lifecycle runs without preparation, credentials, or container
+network in the official multi-architecture `buildpack-deps:bookworm` image.
+This image shares its base layers with the existing Python, Node, and Ruby
+runtimes; the discarded dedicated GCC image would have added about 2.06 GB.
+Native arm64 availability was confirmed for the same tag. CMake remains
+preferred when its stronger CTest plan is available, preventing duplicate
+native builds.
+
+Replanning the 45-repository cohort raised automatic coverage from 23 to 26
+by adding FFmpeg, CUPS, and Redis. Targeted checks also produced bounded plans
+for Samba and zstd. The first zstd experiment demonstrated why target order
+matters: root `test` builds all variants and was still processing its 5 GB
+large-data suite after seven minutes. The final `quick` policy therefore
+prefers the conventional root `check` target, while `reproduce` and `full`
+prefer `test`.
+
+The physical public proof used
+`facebook/zstd@5c7b7bad26808e6b40ac3b3d0075466e27738a9d`. With ordinary storage
+reserve checks active, `make -j2 check` completed in 61.240 seconds, explicitly
+skipped the large-data extension, and reported all tests successful. The test
+container had `test_network=none`, no preparation phase or prepared volume,
+plan v9, and execution policy v21. The resolved image identity was
+`buildpack-deps@sha256:5bfacbc6611775f980cf283fbc86b999517878d39723510687135a0d6366bbee`.
