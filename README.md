@@ -54,28 +54,27 @@ Prerequisites:
 - Git
 - Docker, Podman, or Apple `container` 1.0.0+ on a supported Mac
 
-Try the signed release without installing it or executing repository code:
+Try the PyPI release without installing it or executing repository code:
 
 ```shell
-uvx --from "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.19.0" gh-freshclone plan pallets/itsdangerous
+uvx gh-freshclone plan pallets/itsdangerous
 ```
 
 This resolves an immutable public commit and prints the baseline it would run.
 Replace `plan` with `doctor` to verify local runner readiness, or with `check`
 when you are ready to execute the baseline in an isolated container.
 
-Until the package is registered on PyPI, install the signed release tag
-directly from GitHub:
-
-```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.19.0"
-gh-freshclone doctor
-```
-
-After publication to PyPI:
+Install the command from PyPI:
 
 ```shell
 uv tool install gh-freshclone
+gh-freshclone doctor
+```
+
+The signed GitHub release tag is also an immutable source-install option:
+
+```shell
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.19.1"
 gh-freshclone doctor
 ```
 
@@ -193,7 +192,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - id: baseline
-        uses: yhay81/gh-freshclone@v0.19.0
+        uses: yhay81/gh-freshclone@v0.19.1
         with:
           repository: pallets/itsdangerous
           ref: 672971d66a2ef9f85151e53283113f33d642dabd
@@ -785,22 +784,25 @@ through the dedicated self-hosted workflow.
 ## Release process
 
 The tag-triggered `release.yml` workflow builds and smoke-tests the wheel and
-sdist, records SHA-256 checksums and GitHub artifact attestations, and publishes
-an independent GitHub release. PyPI publication runs only when the repository
-variable `PYPI_TRUSTED_PUBLISHING` is exactly `true` and the `pypi` environment
-is connected as a Trusted Publisher; it requires no long-lived publishing
-token. A `vX.Y.Z` tag must exactly match the project version.
+sdist, records SHA-256 checksums and GitHub artifact attestations, publishes an
+independent GitHub release, and uses PyPI's official publishing action to add
+PEP 740 attestations to the PyPI files. PyPI publication runs only when the
+repository variable `PYPI_TRUSTED_PUBLISHING` is exactly `true` and the `pypi`
+environment is connected as a Trusted Publisher; it requires no long-lived
+publishing token. A `vX.Y.Z` tag must exactly match the project version.
 
 Before publishing, the workflow reruns tests, lint, the native Docker E2E, and
 the performance contract. It builds with `uv build --no-sources`, smoke-tests
 both the wheel and source distribution in isolated environments, writes
 SHA-256 checksums, and transfers only that three-file release set to a separate
-publish job. The source-running build job has read-only repository access and
-no OIDC token; only the `pypi` environment job can attest, create a draft
-GitHub release, and publish through PyPI Trusted Publishing. It rechecks the
-transferred checksums and exposes the GitHub release only after the optional
-PyPI step succeeds or is explicitly disabled. Release artifacts can then be
-checked with:
+publish job. The publish job rechecks the complete set, then copies only the
+wheel and sdist into a dedicated PyPI upload directory. The source-running
+build job has read-only repository access and no OIDC token; only the `pypi`
+environment job can create GitHub and PyPI attestations, create a draft GitHub
+release, and publish through Trusted Publishing. The official PyPA action is
+pinned to an immutable commit. The workflow exposes the GitHub release only
+after the optional PyPI step succeeds or is explicitly disabled. Release
+artifacts can then be checked with:
 
 ```shell
 gh attestation verify gh_freshclone-X.Y.Z-py3-none-any.whl \
