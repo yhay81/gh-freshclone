@@ -6,6 +6,18 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.19.1
+
+- Publish PyPI distributions with the official PyPA action pinned to its
+  signed v1.14.1 commit. Future wheels and source distributions now carry
+  PyPI PEP 740 attestations bound to the repository's Trusted Publisher
+  identity, in addition to the existing GitHub artifact attestations.
+- Copy only the verified wheel and source distribution into a dedicated PyPI
+  upload directory so `SHA256SUMS` remains a GitHub release artifact rather
+  than an index upload candidate. A workflow contract test preserves the
+  immutable action pin, artifact boundary, attestation setting, and OIDC
+  permission split.
+
 ## 0.19.0
 
 - Add a zero-secret composite GitHub Action for Linux Docker or Podman jobs.
