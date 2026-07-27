@@ -47,13 +47,13 @@ execution-policy, plan, and commit identities.
 
 KAGARI, the author's resident security-research coordinator, uses
 `gh-freshclone` as its public-repository G1 baseline gate. The integration pins
-release v0.19.0 by source commit
-`4e0cc0f56f1ed7137582adb85aab927a41658047` and accepts only plan v10,
+release v0.19.1 by source commit
+`4190792b9ca7b40818169323b011db7ce95fb3a9` and accepts only plan v10,
 receipt v7, execution policy v22, and GitHub-status interface v1. It rejects
 private targets, mismatched commits, malformed results, and incoherent source
 provenance instead of treating them as a green baseline.
 
-An independent production-aligned v0.19.0 proof on 2026-07-27 checked
+An independent production-aligned v0.19.1 proof on 2026-07-27 checked
 `dependabot/dependabot-core@6c8bb8bd9cb7ec79c324bc550a992ab66201e76a`
 at the bounded `npm_and_yarn/helpers` component. It installed the public source
 at the pinned commit, forced `--no-cache`, created a fresh credential-free
@@ -62,6 +62,14 @@ test phases in Docker 29.6.2. The proof reported
 `source_cache_hit=false`, `source_validation=fresh-git-fetch`, five passing
 test suites, 25 passing tests, plan v10, receipt v7, and execution policy v22.
 It produced a new PASS receipt instead of reusing a test result.
+
+The v0.19.1 wheel and source distribution are also published through PyPI
+Trusted Publishing. PyPI's Integrity API exposes one PEP 740 attestation
+bundle for each file, bound to repository `yhay81/gh-freshclone`, workflow
+`release.yml`, and environment `pypi`. Both files pass the official
+`pypi-attestations verify pypi` check, their SHA-256 digests match the GitHub
+Release assets, and those assets independently pass GitHub attestation
+verification. The release is anchored by the signed `v0.19.1` Git tag.
 
 The resident KAGARI worker runs independently of this repository's CI and
 consumes the public release through the standalone CLI. This supplies a real
