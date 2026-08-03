@@ -79,7 +79,7 @@ gh-freshclone doctor
 The signed GitHub release tag is also an immutable source-install option:
 
 ```shell
-uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.19.1"
+uv tool install "gh-freshclone @ git+https://github.com/yhay81/gh-freshclone.git@v0.20.0"
 gh-freshclone doctor
 ```
 
@@ -197,7 +197,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - id: baseline
-        uses: yhay81/gh-freshclone@v0.19.1
+        uses: yhay81/gh-freshclone@v0.20.0
         with:
           repository: pallets/itsdangerous
           ref: 672971d66a2ef9f85151e53283113f33d642dabd
