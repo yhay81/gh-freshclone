@@ -7,6 +7,10 @@ Before a human or coding agent starts editing, it answers:
 > What is the fastest trustworthy check for this exact commit, does it pass
 > from a clean checkout, and what evidence produced that conclusion?
 
+```text
+public target -> exact commit -> manifest-only plan -> isolated test -> JSON receipt
+```
+
 It compiles repository-owned manifests into an evidence-backed plan, executes
 the plan without host credentials in an OCI container, and writes a reusable
 JSON receipt. It distinguishes repository test failures from runner failures
@@ -16,7 +20,8 @@ Automatic detection covers root-level Python, Node.js/Bun/Deno, Rust, Go,
 Maven, Gradle, Ruby/Bundler, Composer/PHPUnit, CMake, Make/configure, and .NET
 projects. An operator can apply the same detector to one exact monorepo
 component, while a repository-owned configuration compiles fully custom
-steps. The package is alpha software.
+steps. The package is alpha software; public-interface and release expectations
+are documented in [`docs/stability.md`](docs/stability.md).
 
 ## Why it exists
 
@@ -444,6 +449,25 @@ second network-disabled container. An earlier execution-policy-v13 cold proof to
 verified preparation and took 5.077 seconds while still rerunning all 297
 tests offline. This is the same pasted-PR workflow exposed by the CLI, not a
 fixture-only code path.
+
+### Reproducible public plan cohort
+
+The checked-in public cohort measures automatic planning against 20 immutable
+repository/component cases. Supported cases must compile the exact expected
+ecosystem set; unsupported controls must continue to produce no plan, so an
+unsafe detector expansion is visible as a regression rather than improved
+coverage. Planning hydrates only bounded manifest evidence and never executes
+target-repository code.
+
+```shell
+uv run python -m benchmarks.public_plan_cohort
+```
+
+The JSON report separates missed plans, unexpected plans, ecosystem changes,
+and remote acquisition errors. A weekly nonblocking workflow retains the full
+result as an artifact. See
+[`docs/public-plan-cohort.md`](docs/public-plan-cohort.md) for the cohort,
+methodology, and interpretation rules.
 
 Run the performance contract against any committed local checkout:
 

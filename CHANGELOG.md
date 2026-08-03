@@ -6,6 +6,17 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+- Add a reproducible 20-case public plan cohort spanning every automatic
+  ecosystem plus unsupported fail-closed controls. Its evaluator separates
+  missed plans, unexpected plans, ecosystem changes, and acquisition errors
+  without executing target-repository code.
+- Run the cohort weekly and on manual dispatch as a nonblocking external
+  regression signal, retaining the complete machine-readable result as a
+  workflow artifact.
+- Document the public compatibility boundary, fail-closed deprecation rules,
+  and a release discipline that batches feature work instead of publishing a
+  new minor version for every merged change.
+
 ## 0.19.1
 
 - Publish PyPI distributions with the official PyPA action pinned to its

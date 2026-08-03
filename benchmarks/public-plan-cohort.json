@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "description": "Exact public commits used to measure conservative manifest-only planning without executing repository code.",
+  "cases": [
+    {
+      "id": "python-itsdangerous",
+      "target": "pallets/itsdangerous",
+      "ref": "672971d66a2ef9f85151e53283113f33d642dabd",
+      "expected_ecosystems": ["python"]
+    },
+    {
+      "id": "node-yocto-queue",
+      "target": "sindresorhus/yocto-queue",
+      "ref": "b07eac099753833b29d06c614149904445739776",
+      "expected_ecosystems": ["node"]
+    },
+    {
+      "id": "rust-ripgrep",
+      "target": "BurntSushi/ripgrep",
+      "ref": "f9c05a949d1a0dc8e16dee28ca9605d38611faeb",
+      "expected_ecosystems": ["rust"]
+    },
+    {
+      "id": "go-testify",
+      "target": "stretchr/testify",
+      "ref": "001eb7946baf451879253643e4ce4b38eaa0d4a7",
+      "expected_ecosystems": ["go"]
+    },
+    {
+      "id": "deno-fresh",
+      "target": "denoland/fresh",
+      "ref": "86d6cdeb331a719cf8b1c85bf5e43c8ffa889b3b",
+      "expected_ecosystems": ["deno"]
+    },
+    {
+      "id": "bun-elysia",
+      "target": "elysiajs/elysia",
+      "ref": "8358ff9efbcedf9534995f5977f26b9ceab59329",
+      "expected_ecosystems": ["bun"]
+    },
+    {
+      "id": "legacy-python-fabric",
+      "target": "fabric/fabric",
+      "ref": "ded51893f02c33d2bc7c157624c44a039a952037",
+      "expected_ecosystems": ["python"]
+    },
+    {
+      "id": "maven-log4j2",
+      "target": "apache/logging-log4j2",
+      "ref": "4dee591823e92007665ba9dd6b487b98536c131a",
+      "expected_ecosystems": ["maven"]
+    },
+    {
+      "id": "gradle-spring-framework",
+      "target": "spring-projects/spring-framework",
+      "ref": "eceebb3077dda9e1b19d73c0398ef022cd91f99c",
+      "expected_ecosystems": ["gradle"]
+    },
+    {
+      "id": "cmake-fmt",
+      "target": "fmtlib/fmt",
+      "ref": "2a2d9edb257322bec0f7ac602fde3b382fe0082a",
+      "expected_ecosystems": ["cmake"]
+    },
+    {
+      "id": "dotnet-automapper",
+      "target": "AutoMapper/AutoMapper",
+      "ref": "dfa6dd587c5854b4beee5934beb39ba6e9569b84",
+      "expected_ecosystems": ["dotnet"]
+    },
+    {
+      "id": "dotnet-serilog",
+      "target": "serilog/serilog",
+      "ref": "07d39cfb2928076ecd902a61d295f90d74fe1fa5",
+      "expected_ecosystems": ["dotnet"]
+    },
+    {
+      "id": "php-mockery",
+      "target": "mockery/mockery",
+      "ref": "3a80322e874fbdce4e87e739456fe48d48a527c8",
+      "expected_ecosystems": ["make", "php"]
+    },
+    {
+      "id": "ruby-faker",
+      "target": "faker-ruby/faker",
+      "ref": "cca4184947e09fdd02afb8b89d25a9c8ebc7274e",
+      "expected_ecosystems": ["ruby"]
+    },
+    {
+      "id": "make-zstd",
+      "target": "facebook/zstd",
+      "ref": "5c7b7bad26808e6b40ac3b3d0075466e27738a9d",
+      "expected_ecosystems": ["make"]
+    },
+    {
+      "id": "component-dependabot-npm",
+      "target": "dependabot/dependabot-core",
+      "ref": "6c8bb8bd9cb7ec79c324bc550a992ab66201e76a",
+      "component": "npm_and_yarn/helpers",
+      "expected_ecosystems": ["node"]
+    },
+    {
+      "id": "control-systemd-meson",
+      "target": "systemd/systemd",
+      "ref": "156fb14b6a71ec083af2647fbd3b4950c28732e1",
+      "expected_ecosystems": []
+    },
+    {
+      "id": "control-openssl-configure",
+      "target": "openssl/openssl",
+      "ref": "77f492f29f882e07d57e16920138d991dc9af018",
+      "expected_ecosystems": []
+    },
+    {
+      "id": "control-rails-unlocked",
+      "target": "rails/rails",
+      "ref": "82e663561b7ad5009c4ae08c6954ce721e201cb0",
+      "expected_ecosystems": []
+    },
+    {
+      "id": "control-linux-makefile",
+      "target": "torvalds/linux",
+      "ref": "2d2338c93da79b3bfe4b6099a931d9468d539952",
+      "expected_ecosystems": []
+    }
+  ]
+}

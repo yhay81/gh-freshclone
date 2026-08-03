@@ -48,6 +48,7 @@ jobs:
           uv run python -m benchmarks.cached_workflow . \
             --runner docker --iterations 30 --max-p95-ms 250
           uv run python -m benchmarks.cli_startup --max-p95-ms 250
+          uv run python -m benchmarks.public_plan_cohort
       - name: Build distributions without workspace sources
         run: uv build --no-sources
       - name: Smoke-test wheel and source distribution

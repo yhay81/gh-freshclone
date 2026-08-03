@@ -32,6 +32,13 @@ uv run coverage run -m pytest -q
 uv run coverage report
 ```
 
+Changes to automatic detection should also reproduce the public manifest-only
+cohort. It never executes target-repository code:
+
+```shell
+uv run python -m benchmarks.public_plan_cohort
+```
+
 Native Docker or Podman changes should also run:
 
 ```shell
@@ -54,4 +61,5 @@ Apple silicon Mac.
 
 Public receipt, plan, execution-policy, adapter, API, and exit-code changes
 must update their version or compatibility gate, tests, schema where
-applicable, README, and changelog.
+applicable, README, and changelog. Follow the batching, deprecation, and
+release-gate policy in [`docs/stability.md`](docs/stability.md).
