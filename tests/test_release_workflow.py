@@ -45,3 +45,9 @@ def test_only_publish_job_receives_oidc_permission() -> None:
     assert "id-token: write" not in build_section
     assert "      id-token: write\n" in publish_section
     assert publish_section.count("if: vars.PYPI_TRUSTED_PUBLISHING == 'true'") == 2
+
+
+def test_release_reproduces_the_public_plan_cohort() -> None:
+    workflow = _workflow()
+
+    assert "uv run python -m benchmarks.public_plan_cohort" in workflow
