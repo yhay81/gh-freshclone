@@ -6,6 +6,8 @@ adapter versions evolve independently.
 
 ## Unreleased
 
+## 0.20.0
+
 - Add a reproducible 20-case public plan cohort spanning every automatic
   ecosystem plus unsupported fail-closed controls. Its evaluator separates
   missed plans, unexpected plans, ecosystem changes, and acquisition errors
