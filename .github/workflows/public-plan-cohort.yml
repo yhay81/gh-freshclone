@@ -3,7 +3,7 @@ name: Public plan cohort
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 8 * * 1"
+    - cron: "13 18 * * 4"
 
 permissions:
   contents: read
@@ -15,7 +15,7 @@ concurrency:
 jobs:
   evaluate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 1
     env:
       GIT_TERMINAL_PROMPT: "0"
     steps:
