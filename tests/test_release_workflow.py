@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 WORKFLOW_PATH = Path(__file__).parents[1] / ".github" / "workflows" / "release.yml"
-PYPI_PUBLISH_ACTION_COMMIT = "ba38be9e461d3875417946c167d0b5f3d385a247"
+PYPI_PUBLISH_ACTION_COMMIT = "7245906fb61fa33a13554f9d5fb856fe61758086"
 
 
 def _workflow() -> str:
