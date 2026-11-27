@@ -20,7 +20,7 @@ def test_pypi_publisher_is_commit_pinned_and_generates_attestations() -> None:
 
     assert matches == [PYPI_PUBLISH_ACTION_COMMIT]
     assert (
-        f"pypa/gh-action-pypi-publish@{PYPI_PUBLISH_ACTION_COMMIT} # v1.14.1"
+        f"pypa/gh-action-pypi-publish@{PYPI_PUBLISH_ACTION_COMMIT} # v1.14.3"
         in workflow
     )
     assert "          attestations: true\n" in workflow
