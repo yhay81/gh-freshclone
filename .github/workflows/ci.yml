@@ -63,6 +63,10 @@ jobs:
   docker-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 1
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
     env:
       GH_FRESHCLONE_E2E_RUNNER: docker
     steps:
@@ -74,8 +78,24 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --locked
-      - run: docker info
-      - run: uv run pytest -q tests/test_container_e2e.py
+      - name: Run the assigned Docker E2E tests
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+        run: |
+          uv run pytest --collect-only -q tests/test_container_e2e.py > "$RUNNER_TEMP/docker-tests"
+          mapfile -t tests < <(awk -v shard="$SHARD" -v total="$SHARDS" \
+            '/^tests\/test_container_e2e\.py::/ { if (n++ % total == shard) print }' "$RUNNER_TEMP/docker-tests")
+          test "${#tests[@]}" -gt 0
+          uv run pytest -v "${tests[@]}"
+
+  docker-composite-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Exercise the local composite action
         id: action-e2e
         uses: ./
