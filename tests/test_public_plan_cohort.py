@@ -115,7 +115,7 @@ def test_public_cohort_workflow_is_scheduled_nonblocking_and_pinned() -> None:
     assert "uv run python -m benchmarks.public_plan_cohort" in workflow
     assert "        if: always()\n" in workflow
     assert (
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1"
+        "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2"
         in workflow
     )
 
