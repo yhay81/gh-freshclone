@@ -247,6 +247,10 @@ def test_maven_dependencies_cross_the_offline_phase_boundary(
 ) -> None:
     repository = tmp_path / "maven-repository"
     repository.mkdir()
+    # This fixture starts several short-lived Maven JVMs on a fresh runner.
+    maven_config = repository / ".mvn"
+    maven_config.mkdir()
+    (maven_config / "jvm.config").write_text("-XX:TieredStopAtLevel=1\n", encoding="utf-8")
     subprocess.run(
         ["git", "init", "-b", "main", str(repository)],
         check=True,
