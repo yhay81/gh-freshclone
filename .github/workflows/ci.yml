@@ -39,7 +39,10 @@ jobs:
           python-version: ${{ matrix.python }}
           enable-cache: true
       - run: uv sync --locked
-      - run: uv run pytest -q
+      - if: runner.os != 'Windows'
+        run: uv run pytest -q
+      - if: runner.os == 'Windows'
+        run: uv run --locked --with pytest-xdist==3.8.0 pytest -q -n 2
 
   lint:
     runs-on: ubuntu-latest
@@ -66,7 +69,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [maven, 0, 1, 2, 3, 4]
+        shard: [maven, 0, 1, 2, 3, 4, 5]
     env:
       GH_FRESHCLONE_E2E_RUNNER: docker
     steps:
