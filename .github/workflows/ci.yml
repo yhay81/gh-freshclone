@@ -39,7 +39,10 @@ jobs:
           python-version: ${{ matrix.python }}
           enable-cache: true
       - run: uv sync --locked
-      - run: uv run pytest -q
+      - if: runner.os != 'Windows'
+        run: uv run pytest -q
+      - if: runner.os == 'Windows'
+        run: uv run --locked --with pytest-xdist==3.8.0 pytest -q -n 2
 
   lint:
     runs-on: ubuntu-latest
@@ -63,19 +66,49 @@ jobs:
   docker-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 1
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [maven, 0, 1, 2, 3, 4, 5]
     env:
       GH_FRESHCLONE_E2E_RUNNER: docker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Start pulling the Maven image while Python is being prepared
+        if: matrix.shard == 'maven'
+        run: |
+          image=$(python3 -c 'from gh_freshclone.detect import MAVEN_IMAGE; print(MAVEN_IMAGE)')
+          docker pull "$image" > "$RUNNER_TEMP/maven-pull.log" 2>&1 &
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --locked
-      - run: docker info
-      - run: uv run pytest -q tests/test_container_e2e.py
+      - name: Run the assigned Docker E2E tests
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+        run: |
+          maven='tests/test_container_e2e.py::test_maven_dependencies_cross_the_offline_phase_boundary'
+          if [[ "$SHARD" == maven ]]; then
+            uv run pytest -v -s "$maven"
+          else
+            uv run pytest --collect-only -q tests/test_container_e2e.py > "$RUNNER_TEMP/docker-tests"
+            mapfile -t tests < <(awk -v shard="$SHARD" -v total="$((SHARDS - 1))" -v maven="$maven" \
+              '/^tests\/test_container_e2e\.py::/ && $0 != maven { if (n++ % total == shard) print }' "$RUNNER_TEMP/docker-tests")
+            test "${#tests[@]}" -gt 0
+            uv run pytest -v "${tests[@]}"
+          fi
+
+  docker-composite-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Exercise the local composite action
         id: action-e2e
         uses: ./
